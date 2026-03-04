@@ -1,10 +1,11 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, MessageCircle, Mail, Calendar, FolderOpen,
-  StickyNote, Send, Zap, ClipboardList, Settings
+  StickyNote, Send, Zap, ClipboardList, Settings, X
 } from "lucide-react";
 import JarvisAvatar from "./JarvisAvatar";
 import { cn } from "@/lib/utils";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
@@ -19,11 +20,47 @@ const navItems = [
   { to: "/settings", icon: Settings, label: "Configurações" },
 ];
 
-const AppSidebar = () => {
+interface AppSidebarProps {
+  open?: boolean;
+  onClose?: () => void;
+}
+
+const AppSidebar = ({ open, onClose }: AppSidebarProps) => {
   const location = useLocation();
+  const isMobile = useIsMobile();
+
+  // Desktop: always visible
+  if (!isMobile) {
+    return (
+      <aside className="fixed left-0 top-0 h-full w-64 bg-sidebar border-r border-sidebar-border flex flex-col z-50">
+        <SidebarContent location={location} />
+      </aside>
+    );
+  }
+
+  // Mobile: overlay
+  if (!open) return null;
 
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 bg-sidebar border-r border-sidebar-border flex flex-col z-50">
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/60 z-40" onClick={onClose} />
+      {/* Sidebar */}
+      <aside className="fixed left-0 top-0 h-full w-64 bg-sidebar border-r border-sidebar-border flex flex-col z-50 animate-in slide-in-from-left duration-200">
+        <div className="absolute top-4 right-4">
+          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+        <SidebarContent location={location} onNavigate={onClose} />
+      </aside>
+    </>
+  );
+};
+
+function SidebarContent({ location, onNavigate }: { location: ReturnType<typeof useLocation>; onNavigate?: () => void }) {
+  return (
+    <>
       {/* Brand */}
       <div className="p-6 flex items-center gap-3 border-b border-sidebar-border">
         <JarvisAvatar size="sm" />
@@ -41,6 +78,7 @@ const AppSidebar = () => {
             <NavLink
               key={item.to}
               to={item.to}
+              onClick={onNavigate}
               className={cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body transition-all duration-200",
                 isActive
@@ -62,8 +100,8 @@ const AppSidebar = () => {
           <span>Online • Pronto</span>
         </div>
       </div>
-    </aside>
+    </>
   );
-};
+}
 
 export default AppSidebar;
