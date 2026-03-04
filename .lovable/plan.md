@@ -1,52 +1,47 @@
 
 
-# Plano: Responsividade Mobile + Envio Automático por Voz
+# Plano: Integração com Notion
 
-## 1. Tornar o app responsivo para celular
+## Contexto
 
-O layout atual usa uma sidebar fixa de 264px (`w-64`, `ml-64`) que não funciona em telas pequenas.
+A integração com o Notion requer uma **Internal Integration Token** (API Key) que o usuário cria no site do Notion. Não há conector nativo disponível no Lovable para o Notion.
 
-### Mudanças:
+## O que será feito
 
-**`src/components/AppSidebar.tsx`**
-- Adicionar estado de aberto/fechado controlado por botão hamburger
-- Em mobile (`< 768px`): sidebar fica oculta por padrão, abre como overlay com backdrop escuro
-- Em desktop: comportamento atual mantido (fixa à esquerda)
+### 1. Solicitar a API Key do Notion
+- Usar a ferramenta `add_secret` para pedir ao usuário o `NOTION_API_KEY`
+- Guiar o usuário para criar uma Integration em [notion.so/my-integrations](https://www.notion.so/my-integrations)
+- O usuário precisa compartilhar as páginas/databases desejadas com a integration
 
-**`src/components/AppLayout.tsx`**
-- Usar `useIsMobile()` para alternar entre layout com sidebar fixa e layout mobile
-- Em mobile: remover `ml-64`, adicionar header com botão hamburger + logo
-- Passar estado aberto/fechado para o sidebar
+### 2. Criar Edge Function `notion-api`
+- **`supabase/functions/notion-api/index.ts`**: Proxy para a API do Notion v1
+- Ações suportadas: `search` (buscar páginas/databases), `list_databases`, `query_database`, `get_page`, `create_page`
+- Usa o `NOTION_API_KEY` armazenado como secret
+- Headers necessários: `Authorization: Bearer {token}`, `Notion-Version: 2022-06-28`
 
-**`src/pages/Chat.tsx`**
-- Ajustar `max-w-[70%]` das mensagens para `max-w-[85%]` em mobile
-- Padding responsivo nos containers
+### 3. Substituir a página placeholder
+- **`src/pages/NotionPage.tsx`**: Interface funcional com:
+  - Barra de busca para encontrar páginas e databases
+  - Lista de resultados com ícones e títulos
+  - Visualização de databases com suas propriedades
+  - Botão para criar novas páginas em um database selecionado
+  - Estado de conexão (conectado/desconectado baseado em se a function responde)
 
-**`src/index.css`**
-- Nenhuma mudança necessária (já usa Tailwind responsive)
+### 4. Configuração no `supabase/config.toml`
+- Adicionar `[functions.notion-api]` com `verify_jwt = false`
 
-## 2. Envio automático por voz (sem precisar clicar enviar)
+## Fluxo do usuário
 
-Atualmente o microfone transcreve para o campo de input e o usuário precisa clicar enviar.
+1. Cria uma Integration em notion.so/my-integrations
+2. Compartilha as páginas desejadas com a integration
+3. Cola o token no Lovable (via `add_secret`)
+4. Acessa a página Notion no app e vê suas páginas/databases
 
-### Mudanças:
-
-**`src/pages/Chat.tsx`**
-- Alterar o comportamento do botão de microfone: ao clicar, inicia gravação. Ao clicar novamente (parar), envia a mensagem automaticamente
-- No `useSpeechRecognition`, usar o callback `onEnd` para disparar o envio
-- Adicionar um ref para acumular o transcript durante a sessão de voz e enviar tudo ao parar
-
-### Fluxo:
-1. Usuário clica no microfone → começa a ouvir
-2. Fala é transcrita no campo de input (feedback visual)
-3. Usuário clica novamente para parar → mensagem é enviada automaticamente
-4. Alternativa: se o reconhecimento terminar sozinho (silêncio), também envia
-
-## Resumo de arquivos
+## Arquivos modificados
 
 | Arquivo | Mudança |
 |---|---|
-| `src/components/AppLayout.tsx` | Layout responsivo com header mobile + hamburger |
-| `src/components/AppSidebar.tsx` | Sidebar colapsável em mobile (overlay) |
-| `src/pages/Chat.tsx` | Auto-envio ao parar microfone + ajustes responsivos |
+| `supabase/functions/notion-api/index.ts` | Nova edge function proxy para Notion API |
+| `src/pages/NotionPage.tsx` | UI funcional com busca, listagem e criação |
+| `supabase/config.toml` | Adicionar config da function |
 
