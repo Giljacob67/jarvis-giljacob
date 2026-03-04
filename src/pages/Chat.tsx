@@ -5,7 +5,8 @@ import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import { toast } from "sonner";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
-import { useSpeechSynthesis } from "@/hooks/use-speech-synthesis";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 
 type Message = {
   id: string;
@@ -15,6 +16,7 @@ type Message = {
 };
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
+const TTS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tts`;
 
 async function streamChat({
   messages,
@@ -38,8 +40,7 @@ async function streamChat({
 
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
-    const errorMsg = data.error || "Erro ao conectar com Jarvis.";
-    onError(errorMsg);
+    onError(data.error || "Erro ao conectar com Jarvis.");
     return;
   }
 
@@ -78,7 +79,6 @@ async function streamChat({
     }
   }
 
-  // flush remaining
   if (buffer.trim()) {
     for (let raw of buffer.split("\n")) {
       if (!raw) continue;
@@ -97,23 +97,49 @@ async function streamChat({
   onDone();
 }
 
-const initialMessages: Message[] = [
-  {
-    id: "1",
-    role: "assistant",
-    content: "Bom dia, Senhor. Estou online e pronto para ajudar. Como posso ser útil hoje?",
-    timestamp: new Date(),
-  },
-];
+async function playElevenLabsTTS(text: string): Promise<boolean> {
+  try {
+    const response = await fetch(TTS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) return false;
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+    
+    return new Promise((resolve) => {
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+        resolve(true);
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+        resolve(false);
+      };
+      audio.play().catch(() => resolve(false));
+    });
+  } catch {
+    return false;
+  }
+}
 
 const Chat = () => {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const { user } = useAuth();
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
-
-  const { isSpeaking, speak, stop: stopSpeaking } = useSpeechSynthesis();
 
   const stt = useSpeechRecognition({
     onResult: (transcript) => {
@@ -121,9 +147,78 @@ const Chat = () => {
     },
   });
 
+  // Load or create conversation
+  useEffect(() => {
+    if (!user) return;
+
+    const loadConversation = async () => {
+      // Try to get latest conversation
+      const { data: convos } = await supabase
+        .from("conversations")
+        .select("id")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(1);
+
+      let convId: string;
+      if (convos && convos.length > 0) {
+        convId = convos[0].id;
+      } else {
+        const { data: newConvo } = await supabase
+          .from("conversations")
+          .insert({ user_id: user.id, title: "Nova conversa" })
+          .select("id")
+          .single();
+        convId = newConvo!.id;
+      }
+      setConversationId(convId);
+
+      // Load messages
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("conversation_id", convId)
+        .order("created_at", { ascending: true });
+
+      if (msgs && msgs.length > 0) {
+        setMessages(
+          msgs.map((m: any) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            timestamp: new Date(m.created_at),
+          }))
+        );
+      } else {
+        setMessages([
+          {
+            id: "welcome",
+            role: "assistant",
+            content: "Bom dia, Senhor. Estou online e pronto para ajudar. Como posso ser útil hoje?",
+            timestamp: new Date(),
+          },
+        ]);
+      }
+    };
+
+    loadConversation();
+  }, [user]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const persistMessage = async (role: "user" | "assistant", content: string) => {
+    if (!user || !conversationId) return;
+    await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      user_id: user.id,
+      role,
+      content,
+    });
+    // Update conversation timestamp
+    await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
+  };
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -139,6 +234,7 @@ const Chat = () => {
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsLoading(true);
+    persistMessage("user", text);
 
     const history = [...messages, userMsg].map((m) => ({
       role: m.role,
@@ -168,10 +264,24 @@ const Chat = () => {
       await streamChat({
         messages: history,
         onDelta: upsertAssistant,
-        onDone: () => {
+        onDone: async () => {
           setIsLoading(false);
+          if (assistantContent) {
+            persistMessage("assistant", assistantContent);
+          }
           if (ttsEnabled && assistantContent) {
-            speak(assistantContent);
+            setIsSpeaking(true);
+            const played = await playElevenLabsTTS(assistantContent);
+            if (!played) {
+              // Fallback to browser TTS
+              const utterance = new SpeechSynthesisUtterance(assistantContent);
+              utterance.lang = "pt-BR";
+              utterance.onend = () => setIsSpeaking(false);
+              utterance.onerror = () => setIsSpeaking(false);
+              window.speechSynthesis.speak(utterance);
+              return;
+            }
+            setIsSpeaking(false);
           }
         },
         onError: (msg) => {
@@ -184,7 +294,7 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, ttsEnabled, speak]);
+  }, [input, isLoading, messages, ttsEnabled, conversationId, user]);
 
   return (
     <div className="flex flex-col h-screen">
@@ -265,8 +375,9 @@ const Chat = () => {
           </button>
           <button
             onClick={() => {
-              if (isSpeaking) stopSpeaking();
+              if (isSpeaking) window.speechSynthesis.cancel();
               setTtsEnabled(!ttsEnabled);
+              setIsSpeaking(false);
             }}
             className={`p-2.5 rounded-xl transition-all ${
               ttsEnabled
@@ -294,7 +405,7 @@ const Chat = () => {
           </button>
         </div>
         <p className="text-[10px] text-muted-foreground text-center mt-2 font-body">
-          Diga "Hey Jarvis" para ativar por voz
+          Voz premium ElevenLabs ativa • Diga "Hey Jarvis" para ativar por voz
         </p>
       </div>
     </div>
