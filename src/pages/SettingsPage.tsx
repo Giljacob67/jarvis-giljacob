@@ -462,9 +462,9 @@ const SettingsPage = () => {
             <p className="text-xs text-muted-foreground">
               Adicione preferências personalizadas (ex: idioma preferido, fuso horário, etc.)
             </p>
-            {Object.entries(profile.user_preferences).length > 0 && (
+            {Object.entries(profile.user_preferences).filter(([key]) => key !== "city").length > 0 && (
               <div className="space-y-2">
-                {Object.entries(profile.user_preferences).map(([key, value]) => (
+                {Object.entries(profile.user_preferences).filter(([key]) => key !== "city").map(([key, value]) => (
                   <div key={key} className="flex items-center gap-2 bg-background/50 rounded-lg p-2">
                     <span className="text-xs font-medium text-foreground flex-1">{key}</span>
                     <span className="text-xs text-muted-foreground flex-1">{value}</span>
