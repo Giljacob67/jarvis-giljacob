@@ -33,11 +33,16 @@ async function streamChat({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
+  // Get user's session token for Google data access
+  const { data: { session } } = await supabase.auth.getSession();
+  const authToken = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
   const resp = await fetch(CHAT_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${authToken}`,
     },
     body: JSON.stringify({ messages, profile }),
   });
