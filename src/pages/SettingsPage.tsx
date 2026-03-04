@@ -441,6 +441,18 @@ const SettingsPage = () => {
                   className="w-full bg-background/50 border border-border/50 rounded-lg p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-primary/40 transition-colors"
                 />
               </div>
+              <div className="md:col-span-2">
+                <label className="text-xs text-muted-foreground mb-1 block">🌤️ Cidade (para clima e notícias)</label>
+                <input
+                  value={profile.user_preferences?.city || ""}
+                  onChange={(e) => {
+                    const prefs = { ...profile.user_preferences, city: e.target.value };
+                    updateProfile(selectedProfile, "user_preferences", prefs);
+                  }}
+                  placeholder="Ex: Campo Grande, São Paulo, Curitiba..."
+                  className="w-full bg-background/50 border border-border/50 rounded-lg p-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-primary/40 transition-colors"
+                />
+              </div>
             </div>
           </div>
 
