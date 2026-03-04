@@ -1,55 +1,52 @@
 
 
-# Configuração do Google Cloud Console — Guia Completo
+# Plano: Responsividade Mobile + Envio Automático por Voz
 
-## Respondendo suas perguntas
+## 1. Tornar o app responsivo para celular
 
-**O Client ID é provisório?** Não necessariamente. O `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` que você configurou nos secrets do projeto são permanentes — são as credenciais do seu projeto no Google Cloud Console. O que muda são os **Redirect URIs** que você precisa adicionar conforme o domínio do app muda.
+O layout atual usa uma sidebar fixa de 264px (`w-64`, `ml-64`) que não funciona em telas pequenas.
 
-**Quando publicar, preciso adicionar outro link?** Sim. Hoje o app roda no domínio de preview. Quando você publicar, ele terá um novo domínio (ex: `seuapp.lovable.app` ou um domínio customizado). Você precisará adicionar os novos Redirect URIs no Google Cloud Console.
+### Mudanças:
 
-## URIs que você precisa configurar agora
+**`src/components/AppSidebar.tsx`**
+- Adicionar estado de aberto/fechado controlado por botão hamburger
+- Em mobile (`< 768px`): sidebar fica oculta por padrão, abre como overlay com backdrop escuro
+- Em desktop: comportamento atual mantido (fixa à esquerda)
 
-O código usa `window.location.origin + "/emails"` e `window.location.origin + "/agenda"` como redirect URIs. Portanto, no Google Cloud Console, em **Credentials → OAuth 2.0 Client ID → Authorized redirect URIs**, adicione:
+**`src/components/AppLayout.tsx`**
+- Usar `useIsMobile()` para alternar entre layout com sidebar fixa e layout mobile
+- Em mobile: remover `ml-64`, adicionar header com botão hamburger + logo
+- Passar estado aberto/fechado para o sidebar
 
-```text
-https://id-preview--620cf0bf-6d50-4eca-9afe-e994f62d0a89.lovable.app/emails
-https://id-preview--620cf0bf-6d50-4eca-9afe-e994f62d0a89.lovable.app/agenda
-```
+**`src/pages/Chat.tsx`**
+- Ajustar `max-w-[70%]` das mensagens para `max-w-[85%]` em mobile
+- Padding responsivo nos containers
 
-Quando publicar, adicione também:
-```text
-https://SEU-DOMINIO.lovable.app/emails
-https://SEU-DOMINIO.lovable.app/agenda
-```
+**`src/index.css`**
+- Nenhuma mudança necessária (já usa Tailwind responsive)
 
-## Checklist completo no Google Cloud Console
+## 2. Envio automático por voz (sem precisar clicar enviar)
 
-1. **APIs habilitadas** — Verifique que **Gmail API** e **Google Calendar API** estão ativas em APIs & Services → Library
+Atualmente o microfone transcreve para o campo de input e o usuário precisa clicar enviar.
 
-2. **Tela de consentimento OAuth** (OAuth consent screen):
-   - Em **Authorized domains**, adicione `lovable.app`
-   - Em **Scopes**, adicione os escopos não-sensíveis + os do Gmail/Calendar
-   - Se o app está em modo **Testing**, adicione seu email (`gilberto.jacob@gmail.com`) como **Test user**
+### Mudanças:
 
-3. **Credenciais** (Credentials → OAuth 2.0 Client IDs):
-   - Application type: **Web application**
-   - Authorized redirect URIs: os 2 URIs listados acima
-   - Copie o **Client ID** e **Client Secret** gerados
+**`src/pages/Chat.tsx`**
+- Alterar o comportamento do botão de microfone: ao clicar, inicia gravação. Ao clicar novamente (parar), envia a mensagem automaticamente
+- No `useSpeechRecognition`, usar o callback `onEnd` para disparar o envio
+- Adicionar um ref para acumular o transcript durante a sessão de voz e enviar tudo ao parar
 
-4. **Atualizar secrets no projeto** (se necessário) — Se você criou novas credenciais, eu posso atualizar os valores de `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` nos secrets do projeto
+### Fluxo:
+1. Usuário clica no microfone → começa a ouvir
+2. Fala é transcrita no campo de input (feedback visual)
+3. Usuário clica novamente para parar → mensagem é enviada automaticamente
+4. Alternativa: se o reconhecimento terminar sozinho (silêncio), também envia
 
-## Mudança de código necessária?
+## Resumo de arquivos
 
-Nenhuma. O código já usa `window.location.origin` dinamicamente, então funciona tanto no preview quanto no domínio publicado — desde que os URIs estejam cadastrados no Google Cloud Console.
-
-## Resumo
-
-| Ação | Onde |
+| Arquivo | Mudança |
 |---|---|
-| Adicionar redirect URIs (preview) | Google Cloud Console → Credentials |
-| Adicionar `lovable.app` como authorized domain | Google Cloud Console → OAuth consent screen |
-| Adicionar seu email como test user | Google Cloud Console → OAuth consent screen (se em modo Testing) |
-| Habilitar Gmail API e Calendar API | Google Cloud Console → APIs & Services |
-| Quando publicar: adicionar novos redirect URIs | Google Cloud Console → Credentials |
+| `src/components/AppLayout.tsx` | Layout responsivo com header mobile + hamburger |
+| `src/components/AppSidebar.tsx` | Sidebar colapsável em mobile (overlay) |
+| `src/pages/Chat.tsx` | Auto-envio ao parar microfone + ajustes responsivos |
 
