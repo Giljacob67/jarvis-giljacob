@@ -91,6 +91,51 @@ async function fetchCalendarEvents(accessToken: string): Promise<string> {
   }
 }
 
+async function fetchNews(): Promise<string> {
+  try {
+    const apiKey = Deno.env.get("GNEWS_API_KEY");
+    if (!apiKey) return "API de notícias não configurada.";
+
+    const resp = await fetch(
+      `https://gnews.io/api/v4/top-headlines?country=br&lang=pt&max=8&apikey=${apiKey}`
+    );
+    const data = await resp.json();
+
+    if (!data.articles || data.articles.length === 0) {
+      return "Nenhuma notícia disponível no momento.";
+    }
+
+    return data.articles.map((a: any) =>
+      `- ${a.title} (${a.source?.name || "Fonte desconhecida"})`
+    ).join("\n");
+  } catch (e) {
+    console.error("Error fetching news:", e);
+    return "Erro ao buscar notícias.";
+  }
+}
+
+async function fetchWeather(): Promise<string> {
+  try {
+    const resp = await fetch(
+      "https://api.open-meteo.com/v1/forecast?latitude=-23.5505&longitude=-46.6333&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&timezone=America/Sao_Paulo"
+    );
+    const data = await resp.json();
+    const c = data.current;
+
+    const codeDesc: Record<number, string> = {
+      0: "céu limpo", 1: "predominantemente limpo", 2: "parcialmente nublado", 3: "nublado",
+      45: "neblina", 51: "garoa leve", 53: "garoa", 61: "chuva leve", 63: "chuva moderada",
+      65: "chuva forte", 80: "pancadas de chuva", 95: "trovoadas",
+    };
+
+    const desc = codeDesc[c.weather_code] || "condição desconhecida";
+    return `São Paulo: ${c.temperature_2m}°C (sensação ${c.apparent_temperature}°C), ${desc}, umidade ${c.relative_humidity_2m}%`;
+  } catch (e) {
+    console.error("Error fetching weather:", e);
+    return "Erro ao buscar clima.";
+  }
+}
+
 async function fetchRecentEmails(accessToken: string): Promise<string> {
   try {
     const params = new URLSearchParams({ maxResults: "10", q: "" });
@@ -142,6 +187,8 @@ Personalidade e Tom:
 Integrações ativas — você TEM acesso direto a estes serviços:
 - **Google Gmail**: Você pode ver os e-mails recentes do usuário. Os dados são fornecidos abaixo em tempo real.
 - **Google Calendar**: Você pode ver a agenda da semana do usuário. Os dados são fornecidos abaixo em tempo real.
+- **Notícias**: Você tem acesso às manchetes do dia do Brasil em tempo real. Quando o usuário pedir um resumo das notícias, use os dados fornecidos abaixo para criar um resumo claro e bem estruturado.
+- **Clima**: Você tem acesso ao clima atual. Quando o usuário perguntar sobre o clima, use os dados fornecidos abaixo.
 - **Google Drive**: O usuário pode navegar e buscar arquivos pela aba "Arquivos" na barra lateral.
 - **Automações**: O usuário pode configurar webhooks e automações pela aba "Automações".
 - **Telegram**: Integração com bot do Telegram disponível.
@@ -165,7 +212,7 @@ function buildSystemPrompt(profile?: {
   user_profession?: string;
   user_preferences?: Record<string, string>;
   memories?: string[];
-}, liveData?: { calendar?: string; emails?: string }): string {
+}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }): string {
   let prompt = BASE_SYSTEM_PROMPT;
 
   // Inject live Google data
@@ -174,6 +221,12 @@ function buildSystemPrompt(profile?: {
   }
   if (liveData?.emails) {
     prompt += `\n\n📧 E-MAILS RECENTES (dados em tempo real do Gmail):\n${liveData.emails}`;
+  }
+  if (liveData?.news) {
+    prompt += `\n\n📰 NOTÍCIAS DO DIA (dados em tempo real do GNews):\n${liveData.news}`;
+  }
+  if (liveData?.weather) {
+    prompt += `\n\n🌤️ CLIMA ATUAL:\n${liveData.weather}`;
   }
 
   if (!profile) return prompt;
@@ -213,8 +266,16 @@ serve(async (req) => {
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
     // Try to get user's Google token to fetch live data
-    let liveData: { calendar?: string; emails?: string } = {};
+    let liveData: { calendar?: string; emails?: string; news?: string; weather?: string } = {};
     const authHeader = req.headers.get("Authorization");
+
+    // Fetch news and weather in parallel (no auth needed)
+    const [newsData, weatherData] = await Promise.all([
+      fetchNews(),
+      fetchWeather(),
+    ]);
+    liveData.news = newsData;
+    liveData.weather = weatherData;
 
     try {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -224,12 +285,12 @@ serve(async (req) => {
         if (user) {
           const googleToken = await getValidGoogleToken(supabase, user.id);
           if (googleToken) {
-            // Fetch calendar and emails in parallel
             const [calendarData, emailData] = await Promise.all([
               fetchCalendarEvents(googleToken),
               fetchRecentEmails(googleToken),
             ]);
-            liveData = { calendar: calendarData, emails: emailData };
+            liveData.calendar = calendarData;
+            liveData.emails = emailData;
           }
         }
       }
