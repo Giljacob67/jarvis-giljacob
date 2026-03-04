@@ -97,8 +97,30 @@ async function streamChat({
   onDone();
 }
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, '') // code blocks
+    .replace(/`([^`]+)`/g, '$1') // inline code
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1') // images
+    .replace(/#{1,6}\s+/g, '') // headings
+    .replace(/(\*\*|__)(.*?)\1/g, '$2') // bold
+    .replace(/(\*|_)(.*?)\1/g, '$2') // italic
+    .replace(/~~(.*?)~~/g, '$1') // strikethrough
+    .replace(/^\s*[-*+]\s+/gm, '') // unordered lists
+    .replace(/^\s*\d+\.\s+/gm, '') // ordered lists
+    .replace(/^\s*>\s+/gm, '') // blockquotes
+    .replace(/---+/g, '') // horizontal rules
+    .replace(/\|/g, '') // table pipes
+    .replace(/\n{3,}/g, '\n\n') // excessive newlines
+    .trim();
+}
+
 async function playElevenLabsTTS(text: string): Promise<boolean> {
   try {
+    const cleanText = stripMarkdown(text);
+    if (!cleanText) return false;
+
     const response = await fetch(TTS_URL, {
       method: "POST",
       headers: {
@@ -106,7 +128,7 @@ async function playElevenLabsTTS(text: string): Promise<boolean> {
         apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text: cleanText }),
     });
 
     if (!response.ok) return false;
