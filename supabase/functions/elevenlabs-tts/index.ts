@@ -50,7 +50,7 @@ serve(async (req) => {
             similarity_boost: 0.9,
             style: 0.3,
             use_speaker_boost: true,
-            speed: 1.35,
+            speed: 1.2,
           },
         }),
       }
