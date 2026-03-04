@@ -47,7 +47,7 @@ serve(async (req) => {
         },
         body: JSON.stringify({
           text: truncatedText,
-          model_id: "eleven_turbo_v2_5",
+          model_id: "eleven_multilingual_v2",
           voice_settings: {
             stability: safeStability,
             similarity_boost: safeSimilarity,
