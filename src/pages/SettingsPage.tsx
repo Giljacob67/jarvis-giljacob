@@ -24,14 +24,54 @@ const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 };
 
 const VOICE_OPTIONS = [
-  { id: "eUAnqvLQWNX29twcYLUM", name: "Dyego (Padrão)", lang: "PT-BR" },
-  { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel", lang: "EN" },
-  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", lang: "EN" },
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", lang: "EN" },
-  { id: "TX3LPaxmHKxFdv7VOQHJ", name: "Liam", lang: "EN" },
-  { id: "nPczCjzI2devNBz1zQrb", name: "Brian", lang: "EN" },
-  { id: "CwhRBWXzGAHq8TQ4Fs17", name: "Roger", lang: "EN" },
-  { id: "iP95p4xoKVk53GoZ742B", name: "Chris", lang: "EN" },
+  // 🟣 Educacional / Notícias
+  { id: "eUAnqvLQWNX29twcYLUM", name: "Dyego - Notícias (Padrão)", category: "📰 Educacional" },
+  { id: "6pQlwCgfwffNdI3jjzM6", name: "Fernando Borges - Calmo e Versátil", category: "📰 Educacional" },
+  // 🔵 Narração
+  { id: "lWq4KDY8znfkV0DrK8Vb", name: "Yasmin Alves - Leve e Musical", category: "🎙️ Narração" },
+  { id: "CstacWqMhJQlnfLPxRG4", name: "Will - Profundo e Afetuoso", category: "🎙️ Narração" },
+  { id: "h96v1HCJtcisNNeagp0R", name: "Will - Suspense", category: "🎙️ Narração" },
+  { id: "QWzA13xdHsD8GLBwVILU", name: "Will - Dramático e Cativante", category: "🎙️ Narração" },
+  { id: "IlrWo5tGgTuxNTHyGhWD", name: "Vagner de Souza - Claro e Articulado", category: "🎙️ Narração" },
+  { id: "vr6MVhO51WHYH7ev2Qn9", name: "Onildo Rocha - Maduro e Calmo", category: "🎙️ Narração" },
+  { id: "7s3YtmzXx3fjwUtedUN0", name: "Helena - Histórias Infantis", category: "🎙️ Narração" },
+  { id: "dX7gRq1dIvLTgUaWpEFn", name: "Rafael Valente - Jovem e Cativante", category: "🎙️ Narração" },
+  { id: "MZxV5lN3cv7hi1376O0m", name: "Ana Dias - Envolvente e Suave", category: "🎙️ Narração" },
+  { id: "oJebhZNaPllxk6W0LSBA", name: "Carla - Histórias Infantis", category: "🎙️ Narração" },
+  { id: "x3mAOLD9WzlmrFCwA1S3", name: "Evelin Perdomo - Suave e Expressiva", category: "🎙️ Narração" },
+  { id: "YNOujSUmHtgN6anjqXPf", name: "Victor Power - Sábio e Profundo", category: "🎙️ Narração" },
+  { id: "7i7dgyCkKt4c16dLtwT3", name: "David - Trailer Épico", category: "🎙️ Narração" },
+  { id: "hwnuNyWkl9DjdTFykrN6", name: "Adriano - Profundo e Robusto", category: "🎙️ Narração" },
+  { id: "33B4UnXyTNbgLmdEDh5P", name: "Keren - Doce e Rítmica", category: "🎙️ Narração" },
+  { id: "lRbfoJL2IRJBT7ma6o7n", name: "Rita - Jovem e Vibrante", category: "🎙️ Narração" },
+  { id: "Eyspt3SYhZzXd1Jd3J8O", name: "Bia - Direta e Assertiva", category: "🎙️ Narração" },
+  { id: "y3X5crcIDtFawPx7bcNq", name: "Eliel - Grave e Comandante", category: "🎙️ Narração" },
+  { id: "QJd9SLe6MVCdF6DR0EAu", name: "Gabby - Calma e Suave", category: "🎙️ Narração" },
+  { id: "x6uRgOliu4lpcrqMH3s1", name: "Flavio Francisco - Profundo e Cativante", category: "🎙️ Narração" },
+  { id: "YbP0Eq5RE5uOoCEl7F3T", name: "Weverton - Jovem e Energético", category: "🎙️ Narração" },
+  { id: "hd5xzUNI8bF3Lvk3KkTO", name: "Juliana Barbieri - Expressiva", category: "🎙️ Narração" },
+  { id: "EIkHVdkuarjkYUyMnoes", name: "Nelton - Profundo e Consistente", category: "🎙️ Narração" },
+  // 🟢 Conversacional
+  { id: "ec54d9BmuMSN4IinPrjv", name: "Will - Natural e Conversacional", category: "💬 Conversacional" },
+  { id: "NQ10OlqJ7vYH6XwegHSW", name: "Lucke - Direto e Neutro", category: "💬 Conversacional" },
+  { id: "ZxeM4498ujGNHYhQXtLS", name: "Davi - Amigável e Diplomático", category: "💬 Conversacional" },
+  { id: "cyD08lEy76q03ER1jZ7y", name: "Scheila - Séria e Direta", category: "💬 Conversacional" },
+  { id: "Zk0wRqIFBWGMu2lIk7hw", name: "Marcio - Ousado e Cativante", category: "💬 Conversacional" },
+  { id: "7u8qsX4HQsSHJ0f8xsQZ", name: "João Pedro - Dinâmico", category: "💬 Conversacional" },
+  { id: "xWdpADtEio43ew1zGxUQ", name: "Matheus Santos - Amigável e Calmo", category: "💬 Conversacional" },
+  { id: "MjS9ecoVZlOFzvnemirW", name: "Muhammad Umm - Formal e Didático", category: "💬 Conversacional" },
+  // 🟡 Mídias Sociais
+  { id: "4za2kOXGgUd57HRSQ1fn", name: "Lendário - Alegre e Vibrante", category: "📱 Social Media" },
+  { id: "0YziWIrqiRTHCxeg1lyc", name: "Will - Dinâmico e Cativante", category: "📱 Social Media" },
+  { id: "iScHbNW8K33gNo3lGgbo", name: "Marianne - Doce e Calma", category: "📱 Social Media" },
+  // 🔴 Comercial
+  { id: "UNlPbm2VdUhPl6lNL6D6", name: "Diego - Locutor Confiante", category: "📢 Comercial" },
+  { id: "UaeEQHfiDI8l58WWXiwS", name: "Leonardo Hamaral - Quente e Confiante", category: "📢 Comercial" },
+  // 🎭 Personagens
+  { id: "tS45q0QcrDHqHoaWdCDR", name: "Lax - Engraçado e Sarcástico", category: "🎭 Personagens" },
+  { id: "9pDzHy2OpOgeXM8SeL0t", name: "Borges - Calmo e Confiante", category: "🎭 Personagens" },
+  { id: "ycxdm1PRMs962FxyyuJ0", name: "Otto - Intimidante e Épico", category: "🎭 Personagens" },
+  { id: "oQL5kq26ctJzupM0mJot", name: "Noel Natal - Caloroso e Festivo", category: "🎭 Personagens" },
 ];
 
 interface JarvisProfile {
@@ -470,10 +510,14 @@ const SettingsPage = () => {
                 onChange={(e) => updateVoiceSetting("voice_id", e.target.value)}
                 className="w-full bg-background/50 border border-border/50 rounded-lg p-2.5 text-sm text-foreground outline-none focus:border-primary/40 transition-colors"
               >
-                {VOICE_OPTIONS.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} ({v.lang})
-                  </option>
+                {Array.from(new Set(VOICE_OPTIONS.map((v) => v.category))).map((cat) => (
+                  <optgroup key={cat} label={cat}>
+                    {VOICE_OPTIONS.filter((v) => v.category === cat).map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </div>
