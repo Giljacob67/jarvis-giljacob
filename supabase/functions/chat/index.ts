@@ -56,7 +56,6 @@ function getHeader(headers: any[], name: string): string {
 async function fetchCalendarEvents(accessToken: string): Promise<string> {
   try {
     const now = new Date();
-    // Get events for the next 7 days
     const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const params = new URLSearchParams({
       timeMin: now.toISOString(),
@@ -76,12 +75,19 @@ async function fetchCalendarEvents(accessToken: string): Promise<string> {
       return "Nenhum evento encontrado nos próximos 7 dias.";
     }
 
+    // Format with explicit date labels using São Paulo timezone
+    const todayStr = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short" }).format(now);
+
     const lines = data.items.map((e: any) => {
-      const start = e.start?.dateTime || e.start?.date || "";
-      const end = e.end?.dateTime || e.end?.date || "";
+      const startRaw = e.start?.dateTime || e.start?.date || "";
+      const endRaw = e.end?.dateTime || e.end?.date || "";
+      const startDate = new Date(startRaw);
+      const eventDateStr = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short" }).format(startDate);
+      const isToday = eventDateStr === todayStr;
+      const dayLabel = isToday ? "[HOJE]" : `[${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "numeric", month: "short" }).format(startDate)}]`;
       const location = e.location ? ` | Local: ${e.location}` : "";
       const desc = e.description ? ` | Descrição: ${e.description.slice(0, 100)}` : "";
-      return `- ${e.summary || "Sem título"} | Início: ${start} | Fim: ${end}${location}${desc}`;
+      return `- ${dayLabel} ${e.summary || "Sem título"} | Início: ${startRaw} | Fim: ${endRaw}${location}${desc}`;
     });
 
     return lines.join("\n");
@@ -224,8 +230,13 @@ function buildSystemPrompt(profile?: {
   user_profession?: string;
   user_preferences?: Record<string, string>;
   memories?: string[];
-}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }): string {
+}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string): string {
   let prompt = BASE_SYSTEM_PROMPT;
+
+  // Inject current date/time so Jarvis always knows the exact moment
+  if (currentDateTime) {
+    prompt += `\n\n🕐 DATA E HORA ATUAL (fuso horário do usuário): ${currentDateTime}\nIMPORTANTE: Use SEMPRE esta data/hora como referência para saudações (bom dia/boa tarde/boa noite), para identificar "hoje", "amanhã", "esta semana", etc. Nunca invente ou assuma outra data.`;
+  }
 
   // Inject live Google data
   if (liveData?.calendar) {
@@ -314,7 +325,21 @@ serve(async (req) => {
       // Continue without live data
     }
 
-    const systemPrompt = buildSystemPrompt(profile, liveData);
+    // Generate current date/time in user's timezone (America/Sao_Paulo)
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const currentDateTime = formatter.format(now);
+
+    const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime);
 
     const response = await fetch(
       "https://ai.gateway.lovable.dev/v1/chat/completions",
