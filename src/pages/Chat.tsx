@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, MicOff, Loader2 } from "lucide-react";
+import { Send, Mic, MicOff, Loader2, Volume2, VolumeX } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import { toast } from "sonner";
+import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
+import { useSpeechSynthesis } from "@/hooks/use-speech-synthesis";
 
 type Message = {
   id: string;
@@ -107,9 +109,17 @@ const initialMessages: Message[] = [
 const Chat = () => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
-  const [isListening, setIsListening] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
+
+  const { isSpeaking, speak, stop: stopSpeaking } = useSpeechSynthesis();
+
+  const stt = useSpeechRecognition({
+    onResult: (transcript) => {
+      setInput((prev) => (prev ? prev + " " + transcript : transcript));
+    },
+  });
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -158,7 +168,12 @@ const Chat = () => {
       await streamChat({
         messages: history,
         onDelta: upsertAssistant,
-        onDone: () => setIsLoading(false),
+        onDone: () => {
+          setIsLoading(false);
+          if (ttsEnabled && assistantContent) {
+            speak(assistantContent);
+          }
+        },
         onError: (msg) => {
           toast.error(msg);
           setIsLoading(false);
@@ -169,17 +184,17 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages]);
+  }, [input, isLoading, messages, ttsEnabled, speak]);
 
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
       <div className="p-6 border-b border-border/50 flex items-center gap-4">
-        <JarvisAvatar size="sm" isSpeaking={isLoading} isListening={isListening} />
+        <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={stt.isListening} />
         <div>
           <h1 className="font-heading text-xl font-bold text-foreground">Chat com Jarvis</h1>
           <p className="text-xs text-muted-foreground">
-            {isLoading ? "Processando..." : "Converse por texto ou voz"}
+            {isSpeaking ? "Falando..." : isLoading ? "Processando..." : stt.isListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
         </div>
       </div>
@@ -237,14 +252,30 @@ const Chat = () => {
       <div className="p-4 border-t border-border/50">
         <div className="glass-panel flex items-center gap-3 p-3">
           <button
-            onClick={() => setIsListening(!isListening)}
+            onClick={stt.toggle}
             className={`p-2.5 rounded-xl transition-all ${
-              isListening
+              stt.isListening
                 ? "bg-primary text-primary-foreground arc-reactor-pulse"
                 : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
             }`}
+            title={stt.isSupported ? (stt.isListening ? "Parar de ouvir" : "Ativar microfone") : "Navegador não suporta reconhecimento de voz"}
+            disabled={!stt.isSupported}
           >
-            {isListening ? <Mic size={18} /> : <MicOff size={18} />}
+            {stt.isListening ? <Mic size={18} /> : <MicOff size={18} />}
+          </button>
+          <button
+            onClick={() => {
+              if (isSpeaking) stopSpeaking();
+              setTtsEnabled(!ttsEnabled);
+            }}
+            className={`p-2.5 rounded-xl transition-all ${
+              ttsEnabled
+                ? "bg-accent/20 text-accent-foreground"
+                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+            }`}
+            title={ttsEnabled ? "Desativar voz do Jarvis" : "Ativar voz do Jarvis"}
+          >
+            {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
           </button>
           <input
             value={input}
