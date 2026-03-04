@@ -1,34 +1,40 @@
 
 
-## Plano: Página de Automações com Lista de Webhooks do Make
+## Plano: Página de Log de Atividades
 
 ### O que será construído
 
-Uma página funcional de automações onde você poderá cadastrar, gerenciar e disparar webhooks do Make manualmente. Cada automação terá nome, descrição, URL do webhook e um botão de disparo com feedback de status.
+Uma página funcional que exibe o histórico de todas as ações executadas pelo Jarvis: disparos de automações, mensagens de chat, e-mails enviados, eventos criados, etc. Os logs serão persistidos no banco e exibidos em uma timeline filtrada.
 
 ### Etapas
 
-**1. Criar tabela `automations` no banco de dados**
+**1. Criar tabela `activity_logs` no banco**
 
-Colunas: `id`, `user_id`, `name`, `description`, `webhook_url`, `last_triggered_at`, `last_status` (success/error/pending), `created_at`, `updated_at`. RLS para que cada usuário veja apenas suas automações.
+Colunas: `id`, `user_id`, `action_type` (automation_trigger, chat_message, email_sent, calendar_event, telegram_message, etc.), `title`, `description`, `status` (success/error), `metadata` (jsonb para dados extras), `created_at`. RLS por `user_id`.
 
-**2. Criar edge function `make-webhook`**
+**2. Registrar logs automaticamente nas edge functions existentes**
 
-Recebe o `automation_id`, busca a URL do webhook no banco, faz um POST para o Make e atualiza `last_triggered_at` e `last_status`. Isso evita expor a URL do webhook no frontend.
+Inserir registros na tabela `activity_logs` quando ações são executadas:
+- `make-webhook`: log ao disparar automação
+- `chat`: log ao processar mensagem
+- `gmail-api`: log ao enviar e-mail
+- `calendar-api`: log ao criar evento
+- `telegram-bot`: log ao receber/enviar mensagem
 
-**3. Reescrever `src/pages/Automations.tsx`**
+**3. Reescrever `src/pages/ActivityLog.tsx`**
 
-Interface com:
-- Lista de automações cadastradas em cards
-- Botão "Nova Automação" abre dialog com formulário (nome, descrição, URL do webhook)
-- Cada card mostra nome, descrição, status da última execução e botão "Disparar"
-- Botão de disparar chama a edge function e mostra feedback (loading, sucesso, erro)
-- Opções de editar e excluir cada automação
+- Timeline vertical com ícones por tipo de ação
+- Filtros por tipo de ação (automação, chat, e-mail, etc.)
+- Filtro por período (hoje, 7 dias, 30 dias)
+- Filtro por status (sucesso/erro)
+- Paginação ou scroll infinito
+- Cada entrada mostra: ícone, título, descrição, status badge, timestamp relativo
 
 ### Detalhes Técnicos
 
-- Tabela com RLS por `user_id` (SELECT, INSERT, UPDATE, DELETE)
-- Edge function valida autenticação via JWT do header
-- Frontend usa React Query para CRUD na tabela `automations`
-- O disparo chama `supabase.functions.invoke('make-webhook', { body: { automation_id } })`
+- Tabela com RLS `auth.uid() = user_id` para SELECT/INSERT
+- Edge functions usam service role client para inserir logs
+- Frontend usa React Query com filtros como query params
+- Formatação de datas com `date-fns` (já instalado)
+- Limite de 50 registros por página com "carregar mais"
 
