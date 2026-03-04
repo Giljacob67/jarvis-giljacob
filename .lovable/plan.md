@@ -1,73 +1,56 @@
 
 
-# Plano: Corrigir voz ElevenLabs + Integração Gmail
+# Plano: Integração Google Calendar (Fase 4.2)
 
-## Problema da voz
+## Arquitetura
 
-Dois problemas identificados:
-
-1. **Markdown na fala**: O texto enviado ao ElevenLabs contém markdown bruto (`**negrito**`, `- listas`, `### títulos`). A API lê literalmente "asterisco asterisco". Solução: criar função `stripMarkdown()` que remove toda formatação antes de enviar ao TTS.
-
-2. **Voz robótica/lenta**: Os voice settings atuais usam `stability: 0.6` e `style: 0.3`. Para um tom mais conversacional e natural, vamos ajustar para `stability: 0.4`, `similarity_boost: 0.85`, `style: 0.5` e `speed: 1.1`. Também trocar o modelo para `eleven_turbo_v2_5` que tem menor latência.
-
-### Mudanças
-
-**`src/pages/Chat.tsx`**: Adicionar função `stripMarkdown(text)` que remove `**`, `*`, `#`, `` ` ``, `[]()`, etc. antes de chamar `playElevenLabsTTS`.
-
-**`supabase/functions/elevenlabs-tts/index.ts`**: Ajustar voice_settings e modelo para voz mais natural e rápida.
-
----
-
-## Integração Gmail (Fase 4.1)
-
-Gmail não tem conector disponível na plataforma. Vamos usar OAuth do Google via edge function.
-
-### Arquitetura
+Reutilizar a infraestrutura OAuth já existente (tabela `google_tokens` e edge function `gmail-auth`). Precisamos apenas adicionar o scope do Calendar ao fluxo OAuth e criar uma nova edge function para a API do Calendar.
 
 ```text
-[Chat.tsx / Emails.tsx]
+[Agenda.tsx]
       ↓
-[Edge Function: gmail-api]
+[Edge Function: calendar-api]
       ↓
-[Google Gmail API via OAuth token]
+[Google Calendar API via OAuth token existente]
 ```
 
-### Fluxo OAuth
+## Mudanças necessárias
 
-1. Usuário clica "Conectar Gmail" na página de Emails
-2. Redireciona para Google OAuth consent screen (scopes: `gmail.readonly`, `gmail.send`)
-3. Google redireciona de volta com auth code
-4. Edge function troca code por access/refresh tokens e armazena no banco
-5. Requisições subsequentes usam o token armazenado
+### 1. Adicionar scope do Calendar ao OAuth
 
-### Tabelas necessárias
+**`supabase/functions/gmail-auth/index.ts`**: Adicionar `https://www.googleapis.com/auth/calendar` e `https://www.googleapis.com/auth/calendar.events` ao array de SCOPES. Usuários que já conectaram Gmail precisarão reconectar para autorizar o novo scope.
 
-- `google_tokens` — armazena `access_token`, `refresh_token`, `expires_at` por `user_id`, com RLS
+### 2. Nova Edge Function: `calendar-api`
 
-### Edge Functions
+**`supabase/functions/calendar-api/index.ts`**: Proxy autenticado para Google Calendar API. Reutiliza a mesma lógica de `getValidToken` do gmail-api. Ações suportadas:
 
-- `gmail-auth` — gera URL de consent e troca auth code por tokens
-- `gmail-api` — proxy autenticado para Gmail API (listar, ler, enviar emails)
+- `list` — listar eventos de um período (padrão: semana atual)
+- `get` — detalhes de um evento específico
+- `create` — criar novo evento (título, data/hora início e fim, descrição, localização)
+- `update` — editar evento existente
+- `delete` — remover evento
 
-### Frontend
+### 3. Frontend: Reescrever `src/pages/Agenda.tsx`
 
-- `src/pages/Emails.tsx` — interface completa: lista de emails, visualização, composição, botão conectar
-- Componentes: `EmailList`, `EmailView`, `ComposeEmail`
+Interface completa com:
+- Verificação de conexão Google (reutiliza `gmail-auth` com `check_connection`)
+- Botão "Conectar Google" se não conectado
+- Visualização de calendário mensal usando o componente `Calendar` (react-day-picker) já existente
+- Lista de eventos do dia selecionado
+- Modal para criar/editar eventos com campos: título, data/hora início, data/hora fim, descrição, localização
+- Botão de deletar evento
 
-### Pré-requisitos
+### 4. Config TOML
 
-O usuário precisará criar credenciais OAuth no Google Cloud Console e fornecer `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` como secrets.
+Adicionar `[functions.calendar-api]` com `verify_jwt = false` ao `supabase/config.toml`. (Nota: não editamos config.toml diretamente, será auto-gerado)
 
----
-
-## Resumo de mudanças
+## Resumo de arquivos
 
 | Arquivo | Ação |
 |---|---|
-| `src/pages/Chat.tsx` | Strip markdown antes do TTS |
-| `supabase/functions/elevenlabs-tts/index.ts` | Ajustar modelo e voice settings |
-| `supabase/functions/gmail-auth/index.ts` | Novo — OAuth flow |
-| `supabase/functions/gmail-api/index.ts` | Novo — proxy Gmail API |
-| `src/pages/Emails.tsx` | Reescrever — interface Gmail completa |
-| Migration SQL | Tabela `google_tokens` com RLS |
+| `supabase/functions/gmail-auth/index.ts` | Adicionar scopes do Calendar |
+| `supabase/functions/calendar-api/index.ts` | Novo — proxy Calendar API |
+| `src/pages/Agenda.tsx` | Reescrever — interface completa |
+
+Nenhuma migration SQL necessária — reutiliza `google_tokens` existente.
 
