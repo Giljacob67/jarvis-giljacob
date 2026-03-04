@@ -14,6 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      automations: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          last_status: string | null
+          last_triggered_at: string | null
+          name: string
+          updated_at: string
+          user_id: string
+          webhook_url: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          last_status?: string | null
+          last_triggered_at?: string | null
+          name: string
+          updated_at?: string
+          user_id: string
+          webhook_url: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          last_status?: string | null
+          last_triggered_at?: string | null
+          name?: string
+          updated_at?: string
+          user_id?: string
+          webhook_url?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           created_at: string
