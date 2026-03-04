@@ -114,10 +114,22 @@ async function fetchNews(): Promise<string> {
   }
 }
 
-async function fetchWeather(): Promise<string> {
+async function fetchWeather(city = "São Paulo"): Promise<string> {
   try {
+    // Geocode city
+    const geoResp = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=pt`
+    );
+    const geoData = await geoResp.json();
+    let lat = -23.5505, lon = -46.6333, cityName = city;
+    if (geoData.results && geoData.results.length > 0) {
+      lat = geoData.results[0].latitude;
+      lon = geoData.results[0].longitude;
+      cityName = geoData.results[0].name;
+    }
+
     const resp = await fetch(
-      "https://api.open-meteo.com/v1/forecast?latitude=-23.5505&longitude=-46.6333&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&timezone=America/Sao_Paulo"
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code&timezone=America/Sao_Paulo`
     );
     const data = await resp.json();
     const c = data.current;
@@ -129,7 +141,7 @@ async function fetchWeather(): Promise<string> {
     };
 
     const desc = codeDesc[c.weather_code] || "condição desconhecida";
-    return `São Paulo: ${c.temperature_2m}°C (sensação ${c.apparent_temperature}°C), ${desc}, umidade ${c.relative_humidity_2m}%`;
+    return `${cityName}: ${c.temperature_2m}°C (sensação ${c.apparent_temperature}°C), ${desc}, umidade ${c.relative_humidity_2m}%`;
   } catch (e) {
     console.error("Error fetching weather:", e);
     return "Erro ao buscar clima.";
@@ -269,10 +281,13 @@ serve(async (req) => {
     let liveData: { calendar?: string; emails?: string; news?: string; weather?: string } = {};
     const authHeader = req.headers.get("Authorization");
 
+    // Extract city from profile preferences
+    const userCity = profile?.user_preferences?.city || "São Paulo";
+
     // Fetch news and weather in parallel (no auth needed)
     const [newsData, weatherData] = await Promise.all([
       fetchNews(),
-      fetchWeather(),
+      fetchWeather(userCity),
     ]);
     liveData.news = newsData;
     liveData.weather = weatherData;
