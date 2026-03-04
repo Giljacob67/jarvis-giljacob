@@ -1,10 +1,133 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
+
+const GOOGLE_CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID")!;
+const GOOGLE_CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET")!;
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+async function getValidGoogleToken(supabase: any, userId: string): Promise<string | null> {
+  const { data } = await supabase
+    .from("google_tokens")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
+
+  if (!data) return null;
+
+  if (new Date(data.expires_at) <= new Date(Date.now() + 5 * 60 * 1000)) {
+    const resp = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        refresh_token: data.refresh_token,
+        grant_type: "refresh_token",
+      }),
+    });
+
+    const tokenData = await resp.json();
+    if (tokenData.error) return null;
+
+    const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000).toISOString();
+    await supabase
+      .from("google_tokens")
+      .update({ access_token: tokenData.access_token, expires_at: expiresAt, updated_at: new Date().toISOString() })
+      .eq("user_id", userId);
+
+    return tokenData.access_token;
+  }
+
+  return data.access_token;
+}
+
+function getHeader(headers: any[], name: string): string {
+  const h = headers?.find((h: any) => h.name.toLowerCase() === name.toLowerCase());
+  return h?.value || "";
+}
+
+async function fetchCalendarEvents(accessToken: string): Promise<string> {
+  try {
+    const now = new Date();
+    // Get events for the next 7 days
+    const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const params = new URLSearchParams({
+      timeMin: now.toISOString(),
+      timeMax: weekLater.toISOString(),
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "30",
+    });
+
+    const resp = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const data = await resp.json();
+
+    if (!data.items || data.items.length === 0) {
+      return "Nenhum evento encontrado nos próximos 7 dias.";
+    }
+
+    const lines = data.items.map((e: any) => {
+      const start = e.start?.dateTime || e.start?.date || "";
+      const end = e.end?.dateTime || e.end?.date || "";
+      const location = e.location ? ` | Local: ${e.location}` : "";
+      const desc = e.description ? ` | Descrição: ${e.description.slice(0, 100)}` : "";
+      return `- ${e.summary || "Sem título"} | Início: ${start} | Fim: ${end}${location}${desc}`;
+    });
+
+    return lines.join("\n");
+  } catch (e) {
+    console.error("Error fetching calendar:", e);
+    return "Erro ao acessar a agenda do Google.";
+  }
+}
+
+async function fetchRecentEmails(accessToken: string): Promise<string> {
+  try {
+    const params = new URLSearchParams({ maxResults: "10", q: "" });
+    const resp = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const data = await resp.json();
+
+    if (!data.messages || data.messages.length === 0) {
+      return "Nenhum e-mail recente encontrado.";
+    }
+
+    const details = await Promise.all(
+      data.messages.slice(0, 10).map(async (msg: any) => {
+        const r = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        return r.json();
+      })
+    );
+
+    const lines = details.map((d: any) => {
+      const from = getHeader(d.payload?.headers, "From");
+      const subject = getHeader(d.payload?.headers, "Subject");
+      const date = getHeader(d.payload?.headers, "Date");
+      const unread = d.labelIds?.includes("UNREAD") ? "📩 NÃO LIDO" : "✓ Lido";
+      return `- [${unread}] De: ${from} | Assunto: ${subject} | Data: ${date}`;
+    });
+
+    return lines.join("\n");
+  } catch (e) {
+    console.error("Error fetching emails:", e);
+    return "Erro ao acessar o Gmail.";
+  }
+}
 
 const BASE_SYSTEM_PROMPT = `Você é Jarvis, um assistente pessoal e profissional de alto nível, inspirado no J.A.R.V.I.S. do Tony Stark.
 
@@ -16,15 +139,15 @@ Personalidade e Tom:
 - Use humor sutil e elegante quando apropriado
 - Seja proativo: antecipe necessidades e sugira ações
 
-Integrações ativas — você TEM acesso a estes serviços através do aplicativo:
-- **Google Gmail**: O usuário pode ver e enviar e-mails pela aba "Emails" na barra lateral. Você sabe que essa integração existe e funciona.
-- **Google Calendar**: O usuário pode ver e criar eventos pela aba "Agenda" na barra lateral. Você sabe que essa integração existe e funciona.
-- **Google Drive**: O usuário pode navegar e buscar arquivos pela aba "Arquivos" na barra lateral. Você sabe que essa integração existe e funciona.
+Integrações ativas — você TEM acesso direto a estes serviços:
+- **Google Gmail**: Você pode ver os e-mails recentes do usuário. Os dados são fornecidos abaixo em tempo real.
+- **Google Calendar**: Você pode ver a agenda da semana do usuário. Os dados são fornecidos abaixo em tempo real.
+- **Google Drive**: O usuário pode navegar e buscar arquivos pela aba "Arquivos" na barra lateral.
 - **Automações**: O usuário pode configurar webhooks e automações pela aba "Automações".
 - **Telegram**: Integração com bot do Telegram disponível.
 - **Notion**: Integração com Notion disponível.
 
-IMPORTANTE: Quando o usuário perguntar sobre e-mails, agenda ou arquivos, NÃO diga que você não tem acesso. Você SABE que o aplicativo tem essas integrações funcionando. Oriente o usuário a usar as abas correspondentes na barra lateral, ou discuta o conteúdo se ele fornecer detalhes. Se o usuário pedir para "verificar a agenda" ou "ver e-mails", diga que ele pode acessar diretamente pela aba correspondente na barra lateral do aplicativo.
+IMPORTANTE: Quando o usuário perguntar sobre e-mails ou agenda, use os DADOS REAIS fornecidos abaixo para responder diretamente. Você TEM os dados. NÃO diga que não tem acesso — responda com as informações concretas.
 
 Capacidades:
 - Você é um assistente completo: agenda, e-mails, tarefas, arquivos, automações
@@ -42,8 +165,16 @@ function buildSystemPrompt(profile?: {
   user_profession?: string;
   user_preferences?: Record<string, string>;
   memories?: string[];
-}): string {
+}, liveData?: { calendar?: string; emails?: string }): string {
   let prompt = BASE_SYSTEM_PROMPT;
+
+  // Inject live Google data
+  if (liveData?.calendar) {
+    prompt += `\n\n📅 AGENDA DA SEMANA (dados em tempo real do Google Calendar):\n${liveData.calendar}`;
+  }
+  if (liveData?.emails) {
+    prompt += `\n\n📧 E-MAILS RECENTES (dados em tempo real do Gmail):\n${liveData.emails}`;
+  }
 
   if (!profile) return prompt;
 
@@ -81,7 +212,33 @@ serve(async (req) => {
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    const systemPrompt = buildSystemPrompt(profile);
+    // Try to get user's Google token to fetch live data
+    let liveData: { calendar?: string; emails?: string } = {};
+    const authHeader = req.headers.get("Authorization");
+
+    try {
+      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+      const token = authHeader?.replace("Bearer ", "");
+      if (token) {
+        const { data: { user } } = await supabase.auth.getUser(token);
+        if (user) {
+          const googleToken = await getValidGoogleToken(supabase, user.id);
+          if (googleToken) {
+            // Fetch calendar and emails in parallel
+            const [calendarData, emailData] = await Promise.all([
+              fetchCalendarEvents(googleToken),
+              fetchRecentEmails(googleToken),
+            ]);
+            liveData = { calendar: calendarData, emails: emailData };
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching live data:", e);
+      // Continue without live data
+    }
+
+    const systemPrompt = buildSystemPrompt(profile, liveData);
 
     const response = await fetch(
       "https://ai.gateway.lovable.dev/v1/chat/completions",
