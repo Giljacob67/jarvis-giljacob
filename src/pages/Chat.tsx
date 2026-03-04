@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Mic, MicOff, Loader2, Volume2, VolumeX } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -155,6 +156,7 @@ async function playElevenLabsTTS(text: string): Promise<boolean> {
 
 const Chat = () => {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -162,10 +164,27 @@ const Chat = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const voiceTranscriptRef = useRef("");
+  const shouldAutoSendRef = useRef(false);
 
   const stt = useSpeechRecognition({
     onResult: (transcript) => {
-      setInput((prev) => (prev ? prev + " " + transcript : transcript));
+      voiceTranscriptRef.current = voiceTranscriptRef.current
+        ? voiceTranscriptRef.current + " " + transcript
+        : transcript;
+      setInput(voiceTranscriptRef.current);
+    },
+    onEnd: () => {
+      if (shouldAutoSendRef.current && voiceTranscriptRef.current.trim()) {
+        // Use setTimeout to ensure state is settled
+        setTimeout(() => {
+          shouldAutoSendRef.current = false;
+          // Trigger send via form
+          const btn = document.getElementById("jarvis-send-btn");
+          btn?.click();
+        }, 100);
+      }
+      shouldAutoSendRef.current = false;
     },
   });
 
@@ -332,7 +351,7 @@ const Chat = () => {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className={`flex-1 overflow-y-auto ${isMobile ? "p-3" : "p-6"} space-y-4`}>
         <AnimatePresence>
           {messages.map((msg) => (
             <motion.div
@@ -347,7 +366,7 @@ const Chat = () => {
                 </div>
               )}
               <div
-                className={`max-w-[70%] p-4 rounded-2xl text-sm font-body leading-relaxed ${
+                className={`${isMobile ? "max-w-[85%]" : "max-w-[70%]"} p-4 rounded-2xl text-sm font-body leading-relaxed ${
                   msg.role === "user"
                     ? "bg-primary/15 text-foreground border border-primary/20"
                     : "glass-panel glow-border-blue text-foreground"
@@ -384,13 +403,24 @@ const Chat = () => {
       <div className="p-4 border-t border-border/50">
         <div className="glass-panel flex items-center gap-3 p-3">
           <button
-            onClick={stt.toggle}
+            onClick={() => {
+              if (stt.isListening) {
+                // Stopping: mark for auto-send
+                shouldAutoSendRef.current = true;
+                stt.stop();
+              } else {
+                // Starting: reset transcript
+                voiceTranscriptRef.current = "";
+                shouldAutoSendRef.current = true;
+                stt.start();
+              }
+            }}
             className={`p-2.5 rounded-xl transition-all ${
               stt.isListening
                 ? "bg-primary text-primary-foreground arc-reactor-pulse"
                 : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
             }`}
-            title={stt.isSupported ? (stt.isListening ? "Parar de ouvir" : "Ativar microfone") : "Navegador não suporta reconhecimento de voz"}
+            title={stt.isSupported ? (stt.isListening ? "Parar e enviar" : "Ativar microfone") : "Navegador não suporta reconhecimento de voz"}
             disabled={!stt.isSupported}
           >
             {stt.isListening ? <Mic size={18} /> : <MicOff size={18} />}
@@ -419,6 +449,7 @@ const Chat = () => {
             disabled={isLoading}
           />
           <button
+            id="jarvis-send-btn"
             onClick={sendMessage}
             disabled={!input.trim() || isLoading}
             className="p-2.5 rounded-xl bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/80 transition-all"
