@@ -296,7 +296,7 @@ const Chat = () => {
             const played = await playElevenLabsTTS(assistantContent);
             if (!played) {
               // Fallback to browser TTS
-              const utterance = new SpeechSynthesisUtterance(assistantContent);
+              const utterance = new SpeechSynthesisUtterance(stripMarkdown(assistantContent));
               utterance.lang = "pt-BR";
               utterance.onend = () => setIsSpeaking(false);
               utterance.onerror = () => setIsSpeaking(false);
