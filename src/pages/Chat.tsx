@@ -21,11 +21,13 @@ const TTS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tt
 
 async function streamChat({
   messages,
+  profile,
   onDelta,
   onDone,
   onError,
 }: {
   messages: { role: string; content: string }[];
+  profile?: any;
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (msg: string) => void;
@@ -36,7 +38,7 @@ async function streamChat({
       "Content-Type": "application/json",
       Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
     },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, profile }),
   });
 
   if (!resp.ok) {
@@ -166,6 +168,7 @@ const Chat = () => {
   const endRef = useRef<HTMLDivElement>(null);
   const voiceTranscriptRef = useRef("");
   const shouldAutoSendRef = useRef(false);
+  const [activeProfile, setActiveProfile] = useState<any>(null);
 
   const stt = useSpeechRecognition({
     onResult: (transcript) => {
@@ -245,6 +248,38 @@ const Chat = () => {
     loadConversation();
   }, [user]);
 
+  // Load active profile + memories
+  useEffect(() => {
+    if (!user) return;
+    const loadProfile = async () => {
+      const { data: profiles } = await supabase
+        .from("jarvis_profiles")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("is_active", true)
+        .limit(1);
+
+      if (profiles && profiles.length > 0) {
+        const p = profiles[0] as any;
+        const { data: mems } = await supabase
+          .from("jarvis_memories")
+          .select("content")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(50);
+
+        setActiveProfile({
+          instructions: p.instructions,
+          user_name: p.user_name,
+          user_profession: p.user_profession,
+          user_preferences: p.user_preferences,
+          memories: mems?.map((m: any) => m.content) || [],
+        });
+      }
+    };
+    loadProfile();
+  }, [user]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -304,6 +339,7 @@ const Chat = () => {
     try {
       await streamChat({
         messages: history,
+        profile: activeProfile || undefined,
         onDelta: upsertAssistant,
         onDone: async () => {
           setIsLoading(false);
@@ -335,7 +371,7 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, ttsEnabled, conversationId, user]);
+  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile]);
 
   return (
     <div className="flex flex-col h-screen">
