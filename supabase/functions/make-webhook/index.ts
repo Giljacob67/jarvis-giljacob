@@ -96,6 +96,16 @@ Deno.serve(async (req) => {
       })
       .eq("id", automation_id);
 
+    // Log activity
+    await serviceClient.from("activity_logs").insert({
+      user_id: userId,
+      action_type: "automation_trigger",
+      title: `Automação disparada: ${automation.name}`,
+      description: status === "success" ? "Webhook executado com sucesso" : "Erro ao executar webhook",
+      status,
+      metadata: { automation_id, automation_name: automation.name },
+    });
+
     return new Response(
       JSON.stringify({ success: status === "success", status }),
       {

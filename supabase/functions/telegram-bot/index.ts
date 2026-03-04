@@ -104,6 +104,18 @@ serve(async (req) => {
         // Get AI response and reply
         const aiReply = await getAIResponse(chatId, userText);
         await sendTelegramMessage(token, chatId, aiReply);
+
+        // Log telegram message (no user_id available in webhook mode, use chat_id in metadata)
+        try {
+          const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+          const svc = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+          await svc.from("activity_logs").insert({
+            user_id: "00000000-0000-0000-0000-000000000000",
+            action_type: "telegram_message", title: `Mensagem Telegram`,
+            description: userText.substring(0, 100), status: "success",
+            metadata: { chat_id: chatId, from: msg.from?.first_name },
+          });
+        } catch {}
       }
       return new Response("ok");
     }

@@ -149,11 +149,20 @@ serve(async (req) => {
 
       const data = await resp.json();
       if (data.error) {
+        await supabase.from("activity_logs").insert({
+          user_id: user.id, action_type: "calendar_event", title: `Evento: ${summary || "Sem título"}`,
+          description: "Erro ao criar evento", status: "error", metadata: { error: data.error.message },
+        });
         return new Response(JSON.stringify({ error: data.error.message }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+
+      await supabase.from("activity_logs").insert({
+        user_id: user.id, action_type: "calendar_event", title: `Evento criado: ${summary || "Sem título"}`,
+        description: description || "", status: "success", metadata: { event_id: data.id },
+      });
 
       return new Response(JSON.stringify({ success: true, event: data }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

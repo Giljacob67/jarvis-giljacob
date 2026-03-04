@@ -222,11 +222,20 @@ serve(async (req) => {
 
       const data = await resp.json();
       if (data.error) {
+        await supabase.from("activity_logs").insert({
+          user_id: user.id, action_type: "email_sent", title: `E-mail para ${to}`,
+          description: subject || "", status: "error", metadata: { error: data.error.message },
+        });
         return new Response(JSON.stringify({ error: data.error.message }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+
+      await supabase.from("activity_logs").insert({
+        user_id: user.id, action_type: "email_sent", title: `E-mail enviado para ${to}`,
+        description: subject || "", status: "success", metadata: { message_id: data.id },
+      });
 
       return new Response(JSON.stringify({ success: true, id: data.id }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
