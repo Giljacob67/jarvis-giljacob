@@ -173,6 +173,7 @@ export type Database = {
           user_name: string | null
           user_preferences: Json | null
           user_profession: string | null
+          voice_settings: Json
         }
         Insert: {
           created_at?: string
@@ -185,6 +186,7 @@ export type Database = {
           user_name?: string | null
           user_preferences?: Json | null
           user_profession?: string | null
+          voice_settings?: Json
         }
         Update: {
           created_at?: string
@@ -197,6 +199,7 @@ export type Database = {
           user_name?: string | null
           user_preferences?: Json | null
           user_profession?: string | null
+          voice_settings?: Json
         }
         Relationships: []
       }

@@ -1,11 +1,38 @@
 import { useState, useEffect } from "react";
-import { Settings, User, Brain, Trash2, Plus, Save, ToggleLeft, ToggleRight } from "lucide-react";
+import { Settings, User, Brain, Trash2, Plus, Save, ToggleLeft, ToggleRight, Volume2, Play } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 type ProfileType = "personal" | "professional";
+
+interface VoiceSettings {
+  voice_id: string;
+  speed: number;
+  stability: number;
+  similarity_boost: number;
+  style: number;
+}
+
+const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  voice_id: "eUAnqvLQWNX29twcYLUM",
+  speed: 1.2,
+  stability: 0.6,
+  similarity_boost: 0.9,
+  style: 0.3,
+};
+
+const VOICE_OPTIONS = [
+  { id: "eUAnqvLQWNX29twcYLUM", name: "Dyego (Padrão)", lang: "PT-BR" },
+  { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel", lang: "EN" },
+  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", lang: "EN" },
+  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", lang: "EN" },
+  { id: "TX3LPaxmHKxFdv7VOQHJ", name: "Liam", lang: "EN" },
+  { id: "nPczCjzI2devNBz1zQrb", name: "Brian", lang: "EN" },
+  { id: "CwhRBWXzGAHq8TQ4Fs17", name: "Roger", lang: "EN" },
+  { id: "iP95p4xoKVk53GoZ742B", name: "Chris", lang: "EN" },
+];
 
 interface JarvisProfile {
   id?: string;
@@ -15,6 +42,7 @@ interface JarvisProfile {
   user_name: string;
   user_profession: string;
   user_preferences: Record<string, string>;
+  voice_settings: VoiceSettings;
 }
 
 interface Memory {
@@ -31,12 +59,15 @@ const emptyProfile = (type: ProfileType): JarvisProfile => ({
   user_name: "",
   user_profession: "",
   user_preferences: {},
+  voice_settings: { ...DEFAULT_VOICE_SETTINGS },
 });
+
+const TTS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tts`;
 
 const SettingsPage = () => {
   const { user } = useAuth();
   const isMobile = useIsMobile();
-  const [activeTab, setActiveTab] = useState<"profiles" | "memories">("profiles");
+  const [activeTab, setActiveTab] = useState<"profiles" | "voice" | "memories">("profiles");
   const [selectedProfile, setSelectedProfile] = useState<ProfileType>("personal");
   const [profiles, setProfiles] = useState<Record<ProfileType, JarvisProfile>>({
     personal: emptyProfile("personal"),
@@ -48,6 +79,7 @@ const SettingsPage = () => {
   const [saving, setSaving] = useState(false);
   const [newPrefKey, setNewPrefKey] = useState("");
   const [newPrefValue, setNewPrefValue] = useState("");
+  const [testingVoice, setTestingVoice] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -72,6 +104,7 @@ const SettingsPage = () => {
           user_name: p.user_name || "",
           user_profession: p.user_profession || "",
           user_preferences: (p.user_preferences as Record<string, string>) || {},
+          voice_settings: (p.voice_settings as VoiceSettings) || { ...DEFAULT_VOICE_SETTINGS },
         };
       });
       setProfiles(loaded);
@@ -100,12 +133,13 @@ const SettingsPage = () => {
       instructions: p.instructions,
       user_name: p.user_name,
       user_profession: p.user_profession,
-      user_preferences: p.user_preferences,
+      user_preferences: p.user_preferences as any,
+      voice_settings: p.voice_settings as any,
       updated_at: new Date().toISOString(),
     };
 
     if (p.id) {
-      await supabase.from("jarvis_profiles").update(payload).eq("id", p.id);
+      await supabase.from("jarvis_profiles").update(payload as any).eq("id", p.id);
     } else {
       const { data } = await supabase.from("jarvis_profiles").insert(payload).select("id").single();
       if (data) {
@@ -128,7 +162,6 @@ const SettingsPage = () => {
       [otherType]: { ...prev[otherType], is_active: false },
     }));
 
-    // Save both
     if (profiles[type].id) {
       await supabase.from("jarvis_profiles").update({ is_active: true }).eq("id", profiles[type].id!);
     }
@@ -143,6 +176,60 @@ const SettingsPage = () => {
       ...prev,
       [type]: { ...prev[type], [field]: value },
     }));
+  };
+
+  const updateVoiceSetting = (key: keyof VoiceSettings, value: any) => {
+    const activeType = profiles.personal.is_active ? "personal" : "professional";
+    setProfiles((prev) => ({
+      ...prev,
+      [activeType]: {
+        ...prev[activeType],
+        voice_settings: { ...prev[activeType].voice_settings, [key]: value },
+      },
+    }));
+  };
+
+  const testVoice = async () => {
+    const activeType = profiles.personal.is_active ? "personal" : "professional";
+    const vs = profiles[activeType].voice_settings;
+    setTestingVoice(true);
+    try {
+      const response = await fetch(TTS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({
+          text: "Olá Senhor, esta é a voz configurada para o seu assistente Jarvis. Como posso ajudá-lo hoje?",
+          voiceId: vs.voice_id,
+          speed: vs.speed,
+          stability: vs.stability,
+          similarity_boost: vs.similarity_boost,
+          style: vs.style,
+        }),
+      });
+      if (!response.ok) {
+        toast.error("Erro ao testar voz");
+        setTestingVoice(false);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => { URL.revokeObjectURL(url); setTestingVoice(false); };
+      audio.onerror = () => { URL.revokeObjectURL(url); setTestingVoice(false); };
+      audio.play();
+    } catch {
+      toast.error("Erro ao testar voz");
+      setTestingVoice(false);
+    }
+  };
+
+  const saveVoiceSettings = async () => {
+    const activeType = profiles.personal.is_active ? "personal" : "professional";
+    await saveProfile(activeType);
   };
 
   const addPreference = (type: ProfileType) => {
@@ -185,6 +272,8 @@ const SettingsPage = () => {
   };
 
   const profile = profiles[selectedProfile];
+  const activeType = profiles.personal.is_active ? "personal" : "professional";
+  const voiceSettings = profiles[activeType].voice_settings;
 
   return (
     <div className={`flex flex-col h-screen ${isMobile ? "p-3" : "p-6"}`}>
@@ -200,7 +289,7 @@ const SettingsPage = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 flex-wrap">
         <button
           onClick={() => setActiveTab("profiles")}
           className={`px-4 py-2 rounded-lg text-sm font-body transition-all ${
@@ -210,6 +299,16 @@ const SettingsPage = () => {
           }`}
         >
           <User size={14} className="inline mr-1.5" /> Perfis
+        </button>
+        <button
+          onClick={() => setActiveTab("voice")}
+          className={`px-4 py-2 rounded-lg text-sm font-body transition-all ${
+            activeTab === "voice"
+              ? "bg-primary/15 text-primary border border-primary/20"
+              : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+          }`}
+        >
+          <Volume2 size={14} className="inline mr-1.5" /> Voz
         </button>
         <button
           onClick={() => setActiveTab("memories")}
@@ -352,6 +451,137 @@ const SettingsPage = () => {
             <Save size={16} />
             {saving ? "Salvando..." : "Salvar perfil"}
           </button>
+        </div>
+      )}
+
+      {activeTab === "voice" && (
+        <div className="flex-1 overflow-y-auto space-y-6">
+          <div className="glass-panel p-4 rounded-xl space-y-4">
+            <h3 className="text-sm font-medium text-foreground">🎙️ Voz do Jarvis</h3>
+            <p className="text-xs text-muted-foreground">
+              Escolha a voz e ajuste velocidade, estabilidade e estilo. As configurações se aplicam ao perfil ativo ({activeType === "personal" ? "Pessoal" : "Profissional"}).
+            </p>
+
+            {/* Voice select */}
+            <div>
+              <label className="text-xs text-muted-foreground mb-1.5 block">Voz</label>
+              <select
+                value={voiceSettings.voice_id}
+                onChange={(e) => updateVoiceSetting("voice_id", e.target.value)}
+                className="w-full bg-background/50 border border-border/50 rounded-lg p-2.5 text-sm text-foreground outline-none focus:border-primary/40 transition-colors"
+              >
+                {VOICE_OPTIONS.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Speed */}
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-xs text-muted-foreground">Velocidade</label>
+                <span className="text-xs font-medium text-foreground">{voiceSettings.speed.toFixed(1)}x</span>
+              </div>
+              <input
+                type="range"
+                min="0.7"
+                max="1.2"
+                step="0.05"
+                value={voiceSettings.speed}
+                onChange={(e) => updateVoiceSetting("speed", parseFloat(e.target.value))}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>Lenta (0.7x)</span>
+                <span>Rápida (1.2x)</span>
+              </div>
+            </div>
+
+            {/* Stability */}
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-xs text-muted-foreground">Estabilidade</label>
+                <span className="text-xs font-medium text-foreground">{(voiceSettings.stability * 100).toFixed(0)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={voiceSettings.stability}
+                onChange={(e) => updateVoiceSetting("stability", parseFloat(e.target.value))}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>Expressiva</span>
+                <span>Estável</span>
+              </div>
+            </div>
+
+            {/* Similarity */}
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-xs text-muted-foreground">Fidelidade da voz</label>
+                <span className="text-xs font-medium text-foreground">{(voiceSettings.similarity_boost * 100).toFixed(0)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={voiceSettings.similarity_boost}
+                onChange={(e) => updateVoiceSetting("similarity_boost", parseFloat(e.target.value))}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>Variada</span>
+                <span>Original</span>
+              </div>
+            </div>
+
+            {/* Style */}
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-xs text-muted-foreground">Estilo / Expressividade</label>
+                <span className="text-xs font-medium text-foreground">{(voiceSettings.style * 100).toFixed(0)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={voiceSettings.style}
+                onChange={(e) => updateVoiceSetting("style", parseFloat(e.target.value))}
+                className="w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>Neutro</span>
+                <span>Dramático</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Test + Save buttons */}
+          <div className="flex gap-3">
+            <button
+              onClick={testVoice}
+              disabled={testingVoice}
+              className="flex-1 py-3 rounded-xl bg-secondary text-secondary-foreground font-body text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-border/50"
+            >
+              <Play size={16} />
+              {testingVoice ? "Reproduzindo..." : "Testar voz"}
+            </button>
+            <button
+              onClick={saveVoiceSettings}
+              disabled={saving}
+              className="flex-1 py-3 rounded-xl bg-primary text-primary-foreground font-body text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <Save size={16} />
+              {saving ? "Salvando..." : "Salvar"}
+            </button>
+          </div>
         </div>
       )}
 

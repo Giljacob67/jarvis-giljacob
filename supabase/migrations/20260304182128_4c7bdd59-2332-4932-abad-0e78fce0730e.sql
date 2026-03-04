@@ -1,0 +1,2 @@
+ALTER TABLE public.jarvis_profiles 
+ADD COLUMN voice_settings jsonb NOT NULL DEFAULT '{"voice_id": "eUAnqvLQWNX29twcYLUM", "speed": 1.2, "stability": 0.6, "similarity_boost": 0.9, "style": 0.3}'::jsonb;
