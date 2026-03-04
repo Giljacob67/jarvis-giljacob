@@ -38,6 +38,7 @@ const Telegram = () => {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [webhookActive, setWebhookActive] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -109,20 +110,32 @@ const Telegram = () => {
     }
   };
 
+  const activateWebhook = useCallback(async () => {
+    try {
+      const data = await callTelegram("set_webhook");
+      if (data.ok) {
+        setWebhookActive(true);
+        toast.success("Jarvis IA ativado! O bot responderá automaticamente.");
+      } else {
+        toast.error("Erro ao ativar webhook: " + (data.description || ""));
+      }
+    } catch (e: any) {
+      toast.error("Erro ao ativar webhook: " + e.message);
+    }
+  }, [callTelegram]);
+
   useEffect(() => {
     const init = async () => {
       setLoading(true);
       await fetchBotInfo();
-      await fetchUpdates();
+      await activateWebhook();
       setLoading(false);
     };
     init();
-  }, [fetchBotInfo, fetchUpdates]);
+  }, [fetchBotInfo, activateWebhook]);
 
-  useEffect(() => {
-    intervalRef.current = setInterval(fetchUpdates, 5000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [fetchUpdates]);
+  // No more polling - webhook handles incoming messages
+  // Keep manual refresh for viewing history
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -154,7 +167,7 @@ const Telegram = () => {
             <p className="text-sm text-destructive">Bot não conectado</p>
           )}
           <Badge variant="outline" className="text-xs">
-            {botInfo ? "Online" : "Offline"}
+            {botInfo ? (webhookActive ? "IA Ativa" : "Online") : "Offline"}
           </Badge>
         </div>
 
