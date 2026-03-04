@@ -7,7 +7,8 @@ const corsHeaders = {
 };
 
 // Daniel - deep, authoritative British voice (matches Jarvis personality)
-const DEFAULT_VOICE_ID = "onwK4e9ZLuTAKqWW03F9";
+// Dyego - voice selected by user
+const DEFAULT_VOICE_ID = "eUAnqvLQWNX29twcYLUM";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
