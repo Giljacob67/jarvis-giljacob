@@ -1,40 +1,55 @@
 
 
-## Plano: Página de Log de Atividades
+# Plano: Dashboard Dinâmico + App Instalável (PWA) para iPhone
 
-### O que será construído
+## Problema 1: Dashboard com dados estáticos
 
-Uma página funcional que exibe o histórico de todas as ações executadas pelo Jarvis: disparos de automações, mensagens de chat, e-mails enviados, eventos criados, etc. Os logs serão persistidos no banco e exibidos em uma timeline filtrada.
+O Dashboard atual usa dados **hardcoded** (arrays constantes). Não consulta a API do Gmail, Calendar, nem a tabela `activity_logs`. Por isso nunca atualiza.
 
-### Etapas
+### Solução
 
-**1. Criar tabela `activity_logs` no banco**
+Transformar o Dashboard em componente dinâmico que busca dados reais ao carregar:
 
-Colunas: `id`, `user_id`, `action_type` (automation_trigger, chat_message, email_sent, calendar_event, telegram_message, etc.), `title`, `description`, `status` (success/error), `metadata` (jsonb para dados extras), `created_at`. RLS por `user_id`.
+1. **Card E-mails** — Chamar a edge function `gmail-api` com action `list` para contar e-mails não lidos
+2. **Card Agenda** — Chamar a edge function `calendar-api` para buscar eventos do dia
+3. **Card Tarefas** — (Não há sistema de tarefas real ainda; manter placeholder ou criar tabela futuramente)
+4. **Atividade Recente** — Consultar a tabela `activity_logs` do banco para mostrar as últimas ações reais do usuário
+5. **Briefing Diário** — Montar o texto do briefing com base nos dados reais obtidos acima
+6. **Saudação personalizada** — Usar o nome do perfil (`profiles.full_name`) e ajustar "Bom dia/Boa tarde/Boa noite" conforme o horário
+7. **Loading states** — Adicionar skeletons enquanto os dados carregam
 
-**2. Registrar logs automaticamente nas edge functions existentes**
+### Detalhes técnicos
+- Usar `useQuery` do TanStack Query para cada fonte de dados (gmail, calendar, activity_logs)
+- Tratar erros graciosamente (ex: Google não conectado → mostrar "Conecte o Google")
+- Manter as animações Framer Motion existentes
 
-Inserir registros na tabela `activity_logs` quando ações são executadas:
-- `make-webhook`: log ao disparar automação
-- `chat`: log ao processar mensagem
-- `gmail-api`: log ao enviar e-mail
-- `calendar-api`: log ao criar evento
-- `telegram-bot`: log ao receber/enviar mensagem
+---
 
-**3. Reescrever `src/pages/ActivityLog.tsx`**
+## Problema 2: Uso no iPhone
 
-- Timeline vertical com ícones por tipo de ação
-- Filtros por tipo de ação (automação, chat, e-mail, etc.)
-- Filtro por período (hoje, 7 dias, 30 dias)
-- Filtro por status (sucesso/erro)
-- Paginação ou scroll infinito
-- Cada entrada mostra: ícone, título, descrição, status badge, timestamp relativo
+A melhor opção é transformar o app em **PWA (Progressive Web App)** — um app instalável direto do navegador, sem precisar da App Store.
 
-### Detalhes Técnicos
+### O que o usuário ganha
+- Ícone na tela inicial do iPhone, como um app nativo
+- Abre em tela cheia (sem barra do navegador)
+- Carrega rápido e funciona offline para telas já visitadas
 
-- Tabela com RLS `auth.uid() = user_id` para SELECT/INSERT
-- Edge functions usam service role client para inserir logs
-- Frontend usa React Query com filtros como query params
-- Formatação de datas com `date-fns` (já instalado)
-- Limite de 50 registros por página com "carregar mais"
+### Implementação
+
+1. **Instalar `vite-plugin-pwa`** e configurar no `vite.config.ts`
+2. **Criar manifest** com nome "JARVIS", ícones, cores do tema e `display: "standalone"`
+3. **Adicionar meta tags** no `index.html` para iOS (apple-mobile-web-app-capable, apple-touch-icon, theme-color, viewport)
+4. **Criar ícones PWA** (192x192 e 512x512) na pasta `public/`
+5. **Configurar service worker** com navigateFallbackDenylist para `/~oauth` (para não quebrar o login Google)
+
+Após publicar, basta abrir no Safari do iPhone → Compartilhar → "Adicionar à Tela de Início".
+
+---
+
+## Resumo de arquivos afetados
+
+- `src/pages/Dashboard.tsx` — reescrever com dados dinâmicos
+- `vite.config.ts` — adicionar plugin PWA
+- `index.html` — meta tags para iOS
+- `public/` — ícones PWA (manifest.webmanifest gerado pelo plugin)
 
