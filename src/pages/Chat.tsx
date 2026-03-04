@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import { toast } from "sonner";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
+import { useMediaRecorderSTT } from "@/hooks/use-media-recorder-stt";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -179,10 +180,8 @@ const Chat = () => {
     },
     onEnd: () => {
       if (shouldAutoSendRef.current && voiceTranscriptRef.current.trim()) {
-        // Use setTimeout to ensure state is settled
         setTimeout(() => {
           shouldAutoSendRef.current = false;
-          // Trigger send via form
           const btn = document.getElementById("jarvis-send-btn");
           btn?.click();
         }, 100);
@@ -190,6 +189,30 @@ const Chat = () => {
       shouldAutoSendRef.current = false;
     },
   });
+
+  // Fallback: MediaRecorder + ElevenLabs STT for iOS/mobile
+  const mediaSTT = useMediaRecorderSTT({
+    onResult: (transcript) => {
+      voiceTranscriptRef.current = transcript;
+      setInput(transcript);
+    },
+    onEnd: () => {
+      if (shouldAutoSendRef.current && voiceTranscriptRef.current.trim()) {
+        setTimeout(() => {
+          shouldAutoSendRef.current = false;
+          const btn = document.getElementById("jarvis-send-btn");
+          btn?.click();
+        }, 100);
+      }
+      shouldAutoSendRef.current = false;
+    },
+  });
+
+  // Use native STT if supported, otherwise MediaRecorder fallback
+  const useNativeSTT = stt.isSupported;
+  const voiceIsListening = useNativeSTT ? stt.isListening : mediaSTT.isListening;
+  const voiceIsSupported = useNativeSTT ? stt.isSupported : mediaSTT.isSupported;
+  const voiceIsTranscribing = !useNativeSTT && mediaSTT.isTranscribing;
 
   // Load or create conversation
   useEffect(() => {
@@ -377,11 +400,11 @@ const Chat = () => {
     <div className="flex flex-col h-screen">
       {/* Header */}
       <div className="p-6 border-b border-border/50 flex items-center gap-4">
-        <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={stt.isListening} />
+        <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={voiceIsListening} />
         <div>
           <h1 className="font-heading text-xl font-bold text-foreground">Chat com Jarvis</h1>
           <p className="text-xs text-muted-foreground">
-            {isSpeaking ? "Falando..." : isLoading ? "Processando..." : stt.isListening ? "Ouvindo..." : "Converse por texto ou voz"}
+            {voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
         </div>
       </div>
@@ -440,26 +463,26 @@ const Chat = () => {
         <div className="glass-panel flex items-center gap-3 p-3">
           <button
             onClick={() => {
-              if (stt.isListening) {
-                // Stopping: mark for auto-send
+              if (voiceIsListening) {
                 shouldAutoSendRef.current = true;
-                stt.stop();
+                if (useNativeSTT) stt.stop(); else mediaSTT.stop();
               } else {
-                // Starting: reset transcript
                 voiceTranscriptRef.current = "";
                 shouldAutoSendRef.current = true;
-                stt.start();
+                if (useNativeSTT) stt.start(); else mediaSTT.start();
               }
             }}
             className={`p-2.5 rounded-xl transition-all ${
-              stt.isListening
+              voiceIsListening
                 ? "bg-primary text-primary-foreground arc-reactor-pulse"
+                : voiceIsTranscribing
+                ? "bg-amber-500/20 text-amber-400"
                 : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
             }`}
-            title={stt.isSupported ? (stt.isListening ? "Parar e enviar" : "Ativar microfone") : "Navegador não suporta reconhecimento de voz"}
-            disabled={!stt.isSupported}
+            title={voiceIsSupported ? (voiceIsListening ? "Parar e enviar" : "Ativar microfone") : "Microfone não disponível"}
+            disabled={!voiceIsSupported || voiceIsTranscribing}
           >
-            {stt.isListening ? <Mic size={18} /> : <MicOff size={18} />}
+            {voiceIsTranscribing ? <Loader2 size={18} className="animate-spin" /> : voiceIsListening ? <Mic size={18} /> : <MicOff size={18} />}
           </button>
           <button
             onClick={() => {

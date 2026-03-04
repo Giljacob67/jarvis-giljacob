@@ -46,11 +46,11 @@ serve(async (req) => {
           text: truncatedText,
           model_id: "eleven_turbo_v2_5",
           voice_settings: {
-            stability: 0.4,
-            similarity_boost: 0.85,
-            style: 0.5,
-            use_speaker_boost: true,
-            speed: 1.1,
+          stability: 0.4,
+          similarity_boost: 0.85,
+          style: 0.5,
+          use_speaker_boost: true,
+          speed: 1.35,
           },
         }),
       }
