@@ -14,6 +14,39 @@ export type Database = {
   }
   public: {
     Tables: {
+      activity_logs: {
+        Row: {
+          action_type: string
+          created_at: string
+          description: string | null
+          id: string
+          metadata: Json | null
+          status: string
+          title: string
+          user_id: string
+        }
+        Insert: {
+          action_type: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          metadata?: Json | null
+          status?: string
+          title: string
+          user_id: string
+        }
+        Update: {
+          action_type?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          metadata?: Json | null
+          status?: string
+          title?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       automations: {
         Row: {
           created_at: string
