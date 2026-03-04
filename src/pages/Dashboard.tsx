@@ -1,22 +1,16 @@
 import { motion } from "framer-motion";
-import { Mail, Calendar, CheckSquare, TrendingUp, Clock, AlertTriangle, Loader2, WifiOff } from "lucide-react";
+import { Mail, Calendar, CheckSquare, TrendingUp, AlertTriangle, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import JarvisAvatar from "@/components/JarvisAvatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { format, parseISO, isToday } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { format, parseISO } from "date-fns";
+import HudClock from "@/components/HudClock";
+import WeatherCard from "@/components/WeatherCard";
+import NewsCard from "@/components/NewsCard";
 
 const BASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const API_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-function getGreeting() {
-  const h = new Date().getHours();
-  if (h < 12) return "Bom dia";
-  if (h < 18) return "Boa tarde";
-  return "Boa noite";
-}
 
 const container = {
   hidden: {},
@@ -32,7 +26,6 @@ const Dashboard = () => {
   const { session } = useAuth();
   const token = session?.access_token;
 
-  // Fetch profile
   const { data: profile } = useQuery({
     queryKey: ["dashboard-profile"],
     queryFn: async () => {
@@ -42,7 +35,6 @@ const Dashboard = () => {
     enabled: !!session,
   });
 
-  // Fetch emails
   const { data: emailData, isLoading: emailsLoading } = useQuery({
     queryKey: ["dashboard-emails"],
     queryFn: async () => {
@@ -65,7 +57,6 @@ const Dashboard = () => {
     refetchInterval: 5 * 60 * 1000,
   });
 
-  // Fetch calendar events for today
   const { data: calendarData, isLoading: calendarLoading } = useQuery({
     queryKey: ["dashboard-calendar"],
     queryFn: async () => {
@@ -77,7 +68,6 @@ const Dashboard = () => {
       });
       if (error || data?.error) return { connected: false, count: 0, next: null };
       const events = data?.events || [];
-      // Find next upcoming event
       const upcoming = events
         .filter((e: any) => {
           const dt = e.start.dateTime ? new Date(e.start.dateTime) : null;
@@ -93,7 +83,6 @@ const Dashboard = () => {
     refetchInterval: 5 * 60 * 1000,
   });
 
-  // Fetch activity logs
   const { data: activityLogs, isLoading: logsLoading } = useQuery({
     queryKey: ["dashboard-activity"],
     queryFn: async () => {
@@ -107,18 +96,13 @@ const Dashboard = () => {
     enabled: !!session,
   });
 
-  const userName = profile?.full_name || "Senhor";
-  const greeting = getGreeting();
-
   const briefingCards = [
     {
       icon: Mail,
       title: "E-mails",
       value: emailData?.connected ? `${emailData.unread} não lidos` : "Não conectado",
       detail: emailData?.connected
-        ? emailData.unread > 0
-          ? `${emailData.urgent} aguardando resposta`
-          : "Tudo em dia!"
+        ? emailData.unread > 0 ? `${emailData.urgent} aguardando resposta` : "Tudo em dia!"
         : "Conecte o Gmail",
       color: "text-primary",
       glow: "glow-blue",
@@ -129,9 +113,7 @@ const Dashboard = () => {
       title: "Agenda",
       value: calendarData?.connected ? `${calendarData.count} eventos hoje` : "Não conectado",
       detail: calendarData?.connected
-        ? calendarData.next
-          ? `Próximo: ${calendarData.next}`
-          : "Sem mais eventos hoje"
+        ? calendarData.next ? `Próximo: ${calendarData.next}` : "Sem mais eventos hoje"
         : "Conecte o Google",
       color: "text-accent",
       glow: "glow-gold",
@@ -167,24 +149,15 @@ const Dashboard = () => {
   const isLoaded = !emailsLoading && !calendarLoading;
 
   return (
-    <div className="p-8 space-y-8">
-      {/* Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between"
-      >
-        <div>
-          <h1 className="font-heading text-3xl font-bold text-foreground">
-            {greeting}, {userName}.
-          </h1>
-          <p className="text-muted-foreground font-body mt-1">
-            <Clock size={14} className="inline mr-1" />
-            {new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })}
-          </p>
-        </div>
-        <JarvisAvatar size="md" isSpeaking />
-      </motion.div>
+    <div className="p-6 md:p-8 space-y-6">
+      {/* HUD Clock */}
+      <HudClock />
+
+      {/* Weather + News Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <WeatherCard />
+        <NewsCard />
+      </div>
 
       {/* Briefing Banner */}
       <motion.div

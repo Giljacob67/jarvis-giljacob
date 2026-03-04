@@ -1,14 +1,21 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Mic, MicOff, Loader2, Volume2, VolumeX } from "lucide-react";
+import { Send, Loader2, Volume2, VolumeX, Newspaper, Download } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
+import VoiceOrb from "@/components/VoiceOrb";
 import { toast } from "sonner";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { useMediaRecorderSTT } from "@/hooks/use-media-recorder-stt";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 type Message = {
   id: string;
@@ -33,7 +40,6 @@ async function streamChat({
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
-  // Get user's session token for Google data access
   const { data: { session } } = await supabase.auth.getSession();
   const authToken = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
@@ -108,20 +114,20 @@ async function streamChat({
 
 function stripMarkdown(text: string): string {
   return text
-    .replace(/```[\s\S]*?```/g, '') // code blocks
-    .replace(/`([^`]+)`/g, '$1') // inline code
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1') // images
-    .replace(/#{1,6}\s+/g, '') // headings
-    .replace(/(\*\*|__)(.*?)\1/g, '$2') // bold
-    .replace(/(\*|_)(.*?)\1/g, '$2') // italic
-    .replace(/~~(.*?)~~/g, '$1') // strikethrough
-    .replace(/^\s*[-*+]\s+/gm, '') // unordered lists
-    .replace(/^\s*\d+\.\s+/gm, '') // ordered lists
-    .replace(/^\s*>\s+/gm, '') // blockquotes
-    .replace(/---+/g, '') // horizontal rules
-    .replace(/\|/g, '') // table pipes
-    .replace(/\n{3,}/g, '\n\n') // excessive newlines
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/~~(.*?)~~/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/^\s*>\s+/gm, '')
+    .replace(/---+/g, '')
+    .replace(/\|/g, '')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -155,14 +161,8 @@ async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boo
     const audio = new Audio(audioUrl);
     
     return new Promise((resolve) => {
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        resolve(true);
-      };
-      audio.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
-        resolve(false);
-      };
+      audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(true); };
+      audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(false); };
       audio.play().catch(() => resolve(false));
     });
   } catch {
@@ -179,6 +179,7 @@ const Chat = () => {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [newsOpen, setNewsOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const voiceTranscriptRef = useRef("");
   const shouldAutoSendRef = useRef(false);
@@ -203,7 +204,6 @@ const Chat = () => {
     },
   });
 
-  // Fallback: MediaRecorder + ElevenLabs STT for iOS/mobile
   const mediaSTT = useMediaRecorderSTT({
     onResult: (transcript) => {
       voiceTranscriptRef.current = transcript;
@@ -221,7 +221,6 @@ const Chat = () => {
     },
   });
 
-  // Use native STT if supported, otherwise MediaRecorder fallback
   const useNativeSTT = stt.isSupported;
   const voiceIsListening = useNativeSTT ? stt.isListening : mediaSTT.isListening;
   const voiceIsSupported = useNativeSTT ? stt.isSupported : mediaSTT.isSupported;
@@ -230,9 +229,7 @@ const Chat = () => {
   // Load or create conversation
   useEffect(() => {
     if (!user) return;
-
     const loadConversation = async () => {
-      // Try to get latest conversation
       const { data: convos } = await supabase
         .from("conversations")
         .select("id")
@@ -253,7 +250,6 @@ const Chat = () => {
       }
       setConversationId(convId);
 
-      // Load messages
       const { data: msgs } = await supabase
         .from("messages")
         .select("*")
@@ -280,11 +276,10 @@ const Chat = () => {
         ]);
       }
     };
-
     loadConversation();
   }, [user]);
 
-  // Load active profile + memories
+  // Load active profile
   useEffect(() => {
     if (!user) return;
     const loadProfile = async () => {
@@ -329,7 +324,6 @@ const Chat = () => {
       role,
       content,
     });
-    // Update conversation timestamp
     await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
   };
 
@@ -387,7 +381,6 @@ const Chat = () => {
             setIsSpeaking(true);
             const played = await playElevenLabsTTS(assistantContent, activeProfile?.voice_settings);
             if (!played) {
-              // Fallback to browser TTS
               const utterance = new SpeechSynthesisUtterance(stripMarkdown(assistantContent));
               utterance.lang = "pt-BR";
               utterance.onend = () => setIsSpeaking(false);
@@ -410,17 +403,55 @@ const Chat = () => {
     }
   }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile]);
 
+  const exportChat = () => {
+    const text = messages
+      .map((m) => `[${m.timestamp.toLocaleString("pt-BR")}] ${m.role === "user" ? "Você" : "Jarvis"}: ${m.content}`)
+      .join("\n\n");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `jarvis-chat-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Chat exportado!");
+  };
+
+  const handleOrbDown = () => {
+    voiceTranscriptRef.current = "";
+    shouldAutoSendRef.current = true;
+    if (useNativeSTT) stt.start(); else mediaSTT.start();
+  };
+
+  const handleOrbUp = () => {
+    shouldAutoSendRef.current = true;
+    if (useNativeSTT) stt.stop(); else mediaSTT.stop();
+  };
+
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
-      <div className="p-6 border-b border-border/50 flex items-center gap-4">
+      <div className="p-4 border-b border-border/50 flex items-center gap-4">
         <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={voiceIsListening} />
-        <div>
+        <div className="flex-1">
           <h1 className="font-heading text-xl font-bold text-foreground">Chat com Jarvis</h1>
           <p className="text-xs text-muted-foreground">
             {voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
         </div>
+        <button
+          onClick={() => {
+            if (isSpeaking) window.speechSynthesis.cancel();
+            setTtsEnabled(!ttsEnabled);
+            setIsSpeaking(false);
+          }}
+          className={`p-2 rounded-xl transition-all ${
+            ttsEnabled ? "bg-accent/20 text-accent" : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+          }`}
+          title={ttsEnabled ? "Desativar voz" : "Ativar voz"}
+        >
+          {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+        </button>
       </div>
 
       {/* Messages */}
@@ -472,47 +503,38 @@ const Chat = () => {
         <div ref={endRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-4 border-t border-border/50">
+      {/* Voice Orb + Input Area */}
+      <div className="p-4 border-t border-border/50 space-y-3">
+        {/* Orb + Quick Actions */}
+        <div className="flex items-center justify-center gap-6">
+          <button
+            onClick={() => setNewsOpen(true)}
+            className="p-3 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all"
+            title="Notícias do dia"
+          >
+            <Newspaper size={20} />
+          </button>
+
+          <VoiceOrb
+            isListening={voiceIsListening}
+            isTranscribing={voiceIsTranscribing}
+            isSpeaking={isSpeaking}
+            disabled={!voiceIsSupported || voiceIsTranscribing || isLoading}
+            onPointerDown={handleOrbDown}
+            onPointerUp={handleOrbUp}
+          />
+
+          <button
+            onClick={exportChat}
+            className="p-3 rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all"
+            title="Exportar conversa"
+          >
+            <Download size={20} />
+          </button>
+        </div>
+
+        {/* Text Input */}
         <div className="glass-panel flex items-center gap-3 p-3">
-          <button
-            onClick={() => {
-              if (voiceIsListening) {
-                shouldAutoSendRef.current = true;
-                if (useNativeSTT) stt.stop(); else mediaSTT.stop();
-              } else {
-                voiceTranscriptRef.current = "";
-                shouldAutoSendRef.current = true;
-                if (useNativeSTT) stt.start(); else mediaSTT.start();
-              }
-            }}
-            className={`p-2.5 rounded-xl transition-all ${
-              voiceIsListening
-                ? "bg-primary text-primary-foreground arc-reactor-pulse"
-                : voiceIsTranscribing
-                ? "bg-amber-500/20 text-amber-400"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-            }`}
-            title={voiceIsSupported ? (voiceIsListening ? "Parar e enviar" : "Ativar microfone") : "Microfone não disponível"}
-            disabled={!voiceIsSupported || voiceIsTranscribing}
-          >
-            {voiceIsTranscribing ? <Loader2 size={18} className="animate-spin" /> : voiceIsListening ? <Mic size={18} /> : <MicOff size={18} />}
-          </button>
-          <button
-            onClick={() => {
-              if (isSpeaking) window.speechSynthesis.cancel();
-              setTtsEnabled(!ttsEnabled);
-              setIsSpeaking(false);
-            }}
-            className={`p-2.5 rounded-xl transition-all ${
-              ttsEnabled
-                ? "bg-accent/20 text-accent-foreground"
-                : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-            }`}
-            title={ttsEnabled ? "Desativar voz do Jarvis" : "Ativar voz do Jarvis"}
-          >
-            {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -530,10 +552,19 @@ const Chat = () => {
             <Send size={18} />
           </button>
         </div>
-        <p className="text-[10px] text-muted-foreground text-center mt-2 font-body">
-          Voz premium ElevenLabs ativa • Diga "Hey Jarvis" para ativar por voz
-        </p>
       </div>
+
+      {/* News Dialog */}
+      <Dialog open={newsOpen} onOpenChange={setNewsOpen}>
+        <DialogContent className="glass-panel border-border/50">
+          <DialogHeader>
+            <DialogTitle className="font-display text-sm tracking-widest text-accent">JORNAL DO DIA</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Configure a API de notícias para ver as manchetes do dia aqui.
+          </p>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
