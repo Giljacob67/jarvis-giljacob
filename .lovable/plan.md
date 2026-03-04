@@ -1,45 +1,73 @@
 
 
-# Plano: Fase 2 (Voz ElevenLabs) + Fase 3 (Banco de dados e autenticação)
+# Plano: Corrigir voz ElevenLabs + Integração Gmail
 
-## Resultado do teste
+## Problema da voz
 
-O chat com IA está **100% funcional**. Jarvis respondeu em streaming com personalidade e formatação corretas. O microfone e TTS usam APIs do navegador — não é possível testar via automação, mas o código está integrado corretamente.
+Dois problemas identificados:
 
-## Próximos passos
+1. **Markdown na fala**: O texto enviado ao ElevenLabs contém markdown bruto (`**negrito**`, `- listas`, `### títulos`). A API lê literalmente "asterisco asterisco". Solução: criar função `stripMarkdown()` que remove toda formatação antes de enviar ao TTS.
 
-### 1. Conectar ElevenLabs para voz premium
+2. **Voz robótica/lenta**: Os voice settings atuais usam `stability: 0.6` e `style: 0.3`. Para um tom mais conversacional e natural, vamos ajustar para `stability: 0.4`, `similarity_boost: 0.85`, `style: 0.5` e `speed: 1.1`. Também trocar o modelo para `eleven_turbo_v2_5` que tem menor latência.
 
-O conector ElevenLabs já existe no workspace mas não está vinculado ao projeto. Vamos:
+### Mudanças
 
-- Vincular o conector ElevenLabs ao projeto (disponibiliza `ELEVENLABS_API_KEY`)
-- Criar edge function `elevenlabs-tts` que recebe texto e retorna áudio MP3 usando a API ElevenLabs com modelo `eleven_multilingual_v2`
-- Escolher uma voz grave e natural (ex: "Brian" ou "Daniel") para combinar com a personalidade do Jarvis
-- Atualizar `Chat.tsx` para usar ElevenLabs TTS no lugar do `speechSynthesis` do navegador — reproduzindo o áudio retornado pela edge function
-- Manter fallback para `speechSynthesis` caso a API falhe
+**`src/pages/Chat.tsx`**: Adicionar função `stripMarkdown(text)` que remove `**`, `*`, `#`, `` ` ``, `[]()`, etc. antes de chamar `playElevenLabsTTS`.
 
-### 2. Criar banco de dados e autenticação
+**`supabase/functions/elevenlabs-tts/index.ts`**: Ajustar voice_settings e modelo para voz mais natural e rápida.
 
-Criar as tabelas necessárias para persistência:
+---
 
-- Tabela `profiles` — dados do usuário (nome, preferências)
-- Tabela `conversations` — histórico de conversas por usuário
-- Tabela `messages` — mensagens individuais com `conversation_id` e `user_id`
-- RLS policies para isolar dados por usuário
-- Criar páginas de Login e Signup com email/senha
-- Proteger rotas — redirecionar para login se não autenticado
-- Persistir mensagens do chat no banco e carregar ao abrir conversa
+## Integração Gmail (Fase 4.1)
 
-### 3. Escopo das mudanças
+Gmail não tem conector disponível na plataforma. Vamos usar OAuth do Google via edge function.
 
-**Arquivos novos:**
-- `supabase/functions/elevenlabs-tts/index.ts` — edge function TTS
-- `src/pages/Auth.tsx` — página de login/signup
-- `src/hooks/use-auth.tsx` — contexto de autenticação
-- Migration SQL para tabelas
+### Arquitetura
 
-**Arquivos editados:**
-- `src/pages/Chat.tsx` — integrar ElevenLabs TTS + persistência de mensagens
-- `src/App.tsx` — adicionar rota de auth e proteção de rotas
-- `src/hooks/use-speech-synthesis.ts` — substituir por ElevenLabs
+```text
+[Chat.tsx / Emails.tsx]
+      ↓
+[Edge Function: gmail-api]
+      ↓
+[Google Gmail API via OAuth token]
+```
+
+### Fluxo OAuth
+
+1. Usuário clica "Conectar Gmail" na página de Emails
+2. Redireciona para Google OAuth consent screen (scopes: `gmail.readonly`, `gmail.send`)
+3. Google redireciona de volta com auth code
+4. Edge function troca code por access/refresh tokens e armazena no banco
+5. Requisições subsequentes usam o token armazenado
+
+### Tabelas necessárias
+
+- `google_tokens` — armazena `access_token`, `refresh_token`, `expires_at` por `user_id`, com RLS
+
+### Edge Functions
+
+- `gmail-auth` — gera URL de consent e troca auth code por tokens
+- `gmail-api` — proxy autenticado para Gmail API (listar, ler, enviar emails)
+
+### Frontend
+
+- `src/pages/Emails.tsx` — interface completa: lista de emails, visualização, composição, botão conectar
+- Componentes: `EmailList`, `EmailView`, `ComposeEmail`
+
+### Pré-requisitos
+
+O usuário precisará criar credenciais OAuth no Google Cloud Console e fornecer `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` como secrets.
+
+---
+
+## Resumo de mudanças
+
+| Arquivo | Ação |
+|---|---|
+| `src/pages/Chat.tsx` | Strip markdown antes do TTS |
+| `supabase/functions/elevenlabs-tts/index.ts` | Ajustar modelo e voice settings |
+| `supabase/functions/gmail-auth/index.ts` | Novo — OAuth flow |
+| `supabase/functions/gmail-api/index.ts` | Novo — proxy Gmail API |
+| `src/pages/Emails.tsx` | Reescrever — interface Gmail completa |
+| Migration SQL | Tabela `google_tokens` com RLS |
 
