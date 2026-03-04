@@ -6,8 +6,6 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Daniel - deep, authoritative British voice (matches Jarvis personality)
-// Dyego - voice selected by user
 const DEFAULT_VOICE_ID = "eUAnqvLQWNX29twcYLUM";
 
 serve(async (req) => {
@@ -16,7 +14,7 @@ serve(async (req) => {
   }
 
   try {
-    const { text, voiceId } = await req.json();
+    const { text, voiceId, speed, stability, similarity_boost, style } = await req.json();
     const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
 
     if (!ELEVENLABS_API_KEY) {
@@ -30,9 +28,14 @@ serve(async (req) => {
       );
     }
 
-    // Truncate to 5000 chars for API limits
     const truncatedText = text.slice(0, 5000);
     const voice = voiceId || DEFAULT_VOICE_ID;
+
+    // Clamp values to ElevenLabs allowed ranges
+    const safeSpeed = Math.min(1.2, Math.max(0.7, speed ?? 1.2));
+    const safeStability = Math.min(1, Math.max(0, stability ?? 0.6));
+    const safeSimilarity = Math.min(1, Math.max(0, similarity_boost ?? 0.9));
+    const safeStyle = Math.min(1, Math.max(0, style ?? 0.3));
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_128`,
@@ -46,11 +49,11 @@ serve(async (req) => {
           text: truncatedText,
           model_id: "eleven_turbo_v2_5",
           voice_settings: {
-            stability: 0.6,
-            similarity_boost: 0.9,
-            style: 0.3,
+            stability: safeStability,
+            similarity_boost: safeSimilarity,
+            style: safeStyle,
             use_speaker_boost: true,
-            speed: 1.2,
+            speed: safeSpeed,
           },
         }),
       }

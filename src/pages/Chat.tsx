@@ -120,11 +120,12 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-async function playElevenLabsTTS(text: string): Promise<boolean> {
+async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boolean> {
   try {
     const cleanText = stripMarkdown(text);
     if (!cleanText) return false;
 
+    const vs = voiceSettings || {};
     const response = await fetch(TTS_URL, {
       method: "POST",
       headers: {
@@ -132,7 +133,14 @@ async function playElevenLabsTTS(text: string): Promise<boolean> {
         apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
       },
-      body: JSON.stringify({ text: cleanText }),
+      body: JSON.stringify({
+        text: cleanText,
+        voiceId: vs.voice_id,
+        speed: vs.speed,
+        stability: vs.stability,
+        similarity_boost: vs.similarity_boost,
+        style: vs.style,
+      }),
     });
 
     if (!response.ok) return false;
@@ -296,6 +304,7 @@ const Chat = () => {
           user_name: p.user_name,
           user_profession: p.user_profession,
           user_preferences: p.user_preferences,
+          voice_settings: p.voice_settings,
           memories: mems?.map((m: any) => m.content) || [],
         });
       }
@@ -371,7 +380,7 @@ const Chat = () => {
           }
           if (ttsEnabled && assistantContent) {
             setIsSpeaking(true);
-            const played = await playElevenLabsTTS(assistantContent);
+            const played = await playElevenLabsTTS(assistantContent, activeProfile?.voice_settings);
             if (!played) {
               // Fallback to browser TTS
               const utterance = new SpeechSynthesisUtterance(stripMarkdown(assistantContent));
