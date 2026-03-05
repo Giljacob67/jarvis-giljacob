@@ -184,6 +184,83 @@ export type Database = {
         }
         Relationships: []
       }
+      execution_plans: {
+        Row: {
+          created_at: string
+          id: string
+          status: string
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          status?: string
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          status?: string
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      execution_steps: {
+        Row: {
+          created_at: string
+          id: string
+          plan_id: string
+          requires_confirmation: boolean | null
+          result: string | null
+          status: string
+          step_index: number
+          title: string
+          tool_args: Json | null
+          tool_name: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          plan_id: string
+          requires_confirmation?: boolean | null
+          result?: string | null
+          status?: string
+          step_index?: number
+          title: string
+          tool_args?: Json | null
+          tool_name?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          plan_id?: string
+          requires_confirmation?: boolean | null
+          result?: string | null
+          status?: string
+          step_index?: number
+          title?: string
+          tool_args?: Json | null
+          tool_name?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "execution_steps_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "execution_plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       google_tokens: {
         Row: {
           access_token: string

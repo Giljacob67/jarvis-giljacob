@@ -8,6 +8,7 @@ import FocusModeToggle from "@/components/FocusModeToggle";
 import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import VoiceOrb from "@/components/VoiceOrb";
+import ToolHUD, { type ToolStatus } from "@/components/ToolHUD";
 import { toast } from "sonner";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { useMediaRecorderSTT } from "@/hooks/use-media-recorder-stt";
@@ -41,17 +42,21 @@ type ToolCallMeta = {
 async function streamChat({
   messages,
   profile,
+  sessionState,
   onDelta,
   onDone,
   onError,
   onToolCalls,
+  onToolCallsStart,
 }: {
   messages: { role: string; content: string }[];
   profile?: any;
+  sessionState?: any;
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (msg: string) => void;
   onToolCalls?: (calls: ToolCallMeta[]) => void;
+  onToolCallsStart?: (tools: string[]) => void;
 }) {
   const { data: { session } } = await supabase.auth.getSession();
   const authToken = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -63,7 +68,7 @@ async function streamChat({
       apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({ messages, profile, jarvisMode: (profile as any)?._jarvisMode, userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+    body: JSON.stringify({ messages, profile, jarvisMode: (profile as any)?._jarvisMode, userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone, sessionState }),
   });
 
   if (!resp.ok) {
@@ -104,6 +109,10 @@ async function streamChat({
           continue;
         }
         const delta = parsed.choices?.[0]?.delta;
+        if (delta?.tool_calls_start && onToolCallsStart) {
+          onToolCallsStart(delta.tool_calls_start.map((t: any) => t.tool));
+          continue;
+        }
         if (delta?.tool_calls_meta && onToolCalls) {
           onToolCalls(delta.tool_calls_meta);
           continue;
@@ -305,8 +314,22 @@ const Chat = () => {
   const [jarvisMode, setJarvisMode] = useState<"personal" | "professional">("personal");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [toolStatuses, setToolStatuses] = useState<ToolStatus[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+
+  // ─── Session State ref (anti-repetition, tool cache) ────────────
+  const sessionStateRef = useRef<{
+    lastTopics: string[];
+    lastToolResults: Record<string, { data: string; timestamp: number }>;
+    lastBriefingTimestamp: number;
+    conversationStartedAt: number;
+  }>({
+    lastTopics: [],
+    lastToolResults: {},
+    lastBriefingTimestamp: 0,
+    conversationStartedAt: Date.now(),
+  });
 
   // ─── Barge-in & TTS chunk queue refs ─────────────────────────────
   const ttsAbortRef = useRef(false);
@@ -598,9 +621,12 @@ const Chat = () => {
       };
       setAllProfiles(newAllProfiles);
 
-      // Set active profile based on jarvisMode default (personal)
-      const activeP = personalProfile || profiles.find((p: any) => p.is_active) || profiles[0];
-      if (activeP) setActiveProfile(buildProfileData(activeP));
+      // Set active profile based on is_active from DB
+      const activeP = profiles.find((p: any) => p.is_active) || personalProfile || profiles[0];
+      if (activeP) {
+        setActiveProfile(buildProfileData(activeP));
+        setJarvisMode(activeP.profile_type as "personal" | "professional");
+      }
     };
     loadProfiles();
   }, [user]);
@@ -723,6 +749,48 @@ const Chat = () => {
     const hasFiles = pendingFiles.length > 0;
     if ((!text && !hasFiles) || isLoading) return;
 
+    // ─── A) Command Router: profile switching without LLM ─────────
+    const modeRegex = /^(jarvis[,]?\s*)?(modo|perfil)\s+(pessoal|profissional)/i;
+    const modeMatch = text.match(modeRegex);
+    if (modeMatch && !hasFiles) {
+      const requested = modeMatch[3].toLowerCase();
+      const newMode = requested === "pessoal" ? "personal" : "professional";
+      const modeLabel = newMode === "personal" ? "pessoal" : "profissional";
+
+      // Show user message
+      const userMsg: Message = { id: Date.now().toString(), role: "user", content: text, timestamp: new Date() };
+      setMessages((prev) => [...prev, userMsg]);
+      setInput("");
+      persistMessage("user", text);
+
+      if (newMode === jarvisMode) {
+        const reply = `Você já está no modo ${modeLabel}.`;
+        const assistantMsg: Message = { id: `cmd-${Date.now()}`, role: "assistant", content: reply, timestamp: new Date() };
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage("assistant", reply);
+        if (ttsEnabled) enqueueTTSChunk(reply, activeProfile?.voice_settings);
+        return;
+      }
+
+      // Switch mode
+      setJarvisMode(newMode);
+      if (allProfiles[newMode]) setActiveProfile(allProfiles[newMode]);
+
+      // Persist to DB
+      if (user) {
+        supabase.from("jarvis_profiles").update({ is_active: false }).eq("user_id", user.id).neq("profile_type", newMode).then(() => {
+          supabase.from("jarvis_profiles").update({ is_active: true }).eq("user_id", user.id).eq("profile_type", newMode);
+        });
+      }
+
+      const reply = `Certo. Modo ${modeLabel} ativado.`;
+      const assistantMsg: Message = { id: `cmd-${Date.now()}`, role: "assistant", content: reply, timestamp: new Date() };
+      setMessages((prev) => [...prev, assistantMsg]);
+      persistMessage("assistant", reply);
+      if (ttsEnabled) enqueueTTSChunk(reply, allProfiles[newMode]?.voice_settings || activeProfile?.voice_settings);
+      return;
+    }
+
     // Reset abort flag for new response
     ttsAbortRef.current = false;
     ttsQueueRef.current = [];
@@ -825,11 +893,49 @@ const Chat = () => {
     };
 
     try {
+      // Clear previous tool statuses
+      setToolStatuses([]);
+
       await streamChat({
         messages: history,
         profile: profilePayload || undefined,
+        sessionState: sessionStateRef.current,
         onDelta: upsertAssistant,
+        onToolCallsStart: (toolNames) => {
+          const now = performance.now();
+          setToolStatuses(toolNames.map((tool, i) => ({
+            id: `tool-${now}-${i}`,
+            tool,
+            status: "running" as const,
+            startedAt: now,
+          })));
+        },
         onToolCalls: (calls) => {
+          // Mark tools as done in HUD
+          const now = performance.now();
+          setToolStatuses((prev) => {
+            const updated = [...prev];
+            for (const tc of calls) {
+              const existing = updated.find((s) => s.tool === tc.tool && s.status === "running");
+              if (existing) {
+                existing.status = tc.result?.success === false ? "error" : "done";
+                existing.endedAt = now;
+                existing.result = tc.result;
+              }
+            }
+            return updated;
+          });
+
+          // Update session state tool cache
+          for (const tc of calls) {
+            if (tc.result) {
+              sessionStateRef.current.lastToolResults[tc.tool] = {
+                data: JSON.stringify(tc.result),
+                timestamp: Date.now(),
+              };
+            }
+          }
+
           for (const tc of calls) {
             if (tc.result?.success) {
               const toolLabels: Record<string, string> = {
@@ -971,6 +1077,12 @@ const Chat = () => {
                 const newMode = jarvisMode === "personal" ? "professional" : "personal";
                 setJarvisMode(newMode);
                 if (allProfiles[newMode]) setActiveProfile(allProfiles[newMode]);
+                // Persist to DB
+                if (user) {
+                  supabase.from("jarvis_profiles").update({ is_active: false }).eq("user_id", user.id).neq("profile_type", newMode).then(() => {
+                    supabase.from("jarvis_profiles").update({ is_active: true }).eq("user_id", user.id).eq("profile_type", newMode);
+                  });
+                }
               }}
             >
               {jarvisMode === "professional" ? (
@@ -1050,6 +1162,9 @@ const Chat = () => {
         )}
         <div ref={endRef} />
       </div>
+
+      {/* ToolHUD */}
+      <ToolHUD statuses={toolStatuses} />
 
       {/* Voice Orb + Input Area */}
       <div className="p-4 border-t border-border/50 space-y-3">
