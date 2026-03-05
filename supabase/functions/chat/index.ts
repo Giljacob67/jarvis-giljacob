@@ -1187,25 +1187,46 @@ serve(async (req) => {
     if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0 && userId) {
       const toolCalls = choice.message.tool_calls;
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      
-      const toolResults: any[] = [];
-      for (const tc of toolCalls) {
+
+      // ─── Preamble: immediately stream a short spoken phrase before tools run ────
+      const preambles = [
+        "Certo. Só um instante.",
+        "Entendido. Verificando agora.",
+        "Um momento, por favor.",
+        "Certo, já estou verificando.",
+      ];
+      const preamble = preambles[Math.floor(Math.random() * preambles.length)];
+
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const encoder = new TextEncoder();
+
+      // Send preamble as a streaming delta so the client speaks it immediately
+      const preambleSSE = JSON.stringify({
+        choices: [{ delta: { content: preamble + "\n\n" } }],
+      });
+      writer.write(encoder.encode(`data: ${preambleSSE}\n\n`));
+
+      // ─── Execute ALL tool calls in parallel ─────────────────────
+      const toolResultsPromises = toolCalls.map(async (tc: any) => {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
           : tc.function.arguments;
-        
+
         console.log(`Executing tool: ${tc.function.name}`, args);
-        const result = await executeTool(tc.function.name, args, userId, googleToken);
-        
-        // ─── Audit logging ────────────────────────────────────────
-        await logToolExecution(supabase, userId, tc.function.name, args, result);
-        
-        toolResults.push({
-          role: "tool",
+        const result = await executeTool(tc.function.name, args, userId!, googleToken);
+
+        // Audit logging (fire-and-forget)
+        logToolExecution(supabase, userId!, tc.function.name, args, result);
+
+        return {
+          role: "tool" as const,
           tool_call_id: tc.id,
           content: result,
-        });
-      }
+        };
+      });
+
+      const toolResults = await Promise.all(toolResultsPromises);
 
       const finalMessages = [
         ...allMessages,
@@ -1232,10 +1253,11 @@ serve(async (req) => {
       if (!finalResponse.ok) {
         const t = await finalResponse.text();
         console.error("AI gateway final error:", finalResponse.status, t);
-        return new Response(
-          JSON.stringify({ error: "Erro ao processar resposta." }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        await writer.write(encoder.encode("data: [DONE]\n\n"));
+        writer.close();
+        return new Response(readable, {
+          headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+        });
       }
 
       const toolMeta = toolCalls.map((tc: any) => {
@@ -1249,10 +1271,6 @@ serve(async (req) => {
           result: result ? JSON.parse(result.content) : null,
         };
       });
-
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
-      const encoder = new TextEncoder();
 
       writer.write(encoder.encode(`data: ${JSON.stringify({ tool_calls: toolMeta })}\n\n`));
 
