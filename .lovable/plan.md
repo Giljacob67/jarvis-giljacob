@@ -1,30 +1,35 @@
 
 
-## Plano: Corrigir leitura de números no TTS ElevenLabs
+## Problema
 
-### Problema
-O ElevenLabs pronuncia números, datas, valores monetários e horários de forma incorreta ou inconsistente em português, especialmente no modelo turbo.
+O Jarvis **não recebe o fuso horário real do usuário**. A data/hora no system prompt está **hardcoded para `America/Sao_Paulo`** (linha 1131 de `chat/index.ts`). As coordenadas que você forneceu são usadas apenas para o clima, não para determinar o fuso horário.
 
-### Solução em 2 frentes
+Além disso, o frontend (`Chat.tsx`, linha 66) não envia nenhuma informação de timezone — apenas `messages`, `profile` e `jarvisMode`.
 
-#### 1. Adicionar `apply_text_normalization: "on"` na edge function
-No `supabase/functions/elevenlabs-tts/index.ts`, incluir o parâmetro no body da requisição à API do ElevenLabs. Isso ativa a normalização nativa (converte números para texto antes de sintetizar).
+## Solução
 
-#### 2. Pré-processar o texto antes de enviar ao TTS
-Na função `fetchTTSAudioUrl` em `src/pages/Chat.tsx`, adicionar uma etapa de normalização de números em PT-BR **antes** de enviar ao TTS. Isso garante controle total, independente da normalização da API.
+### 1. Frontend: enviar o timezone real do dispositivo
 
-A função de pré-processamento converteria:
-- `R$ 1.250,90` → `mil duzentos e cinquenta reais e noventa centavos`
-- `14:30` → `quatorze e trinta`
-- `01/02/2025` → `primeiro de fevereiro de dois mil e vinte e cinco`
-- Números simples como `1234` → `mil duzentos e trinta e quatro`
-- Porcentagens como `15%` → `quinze por cento`
-- Telefones como `(11) 99999-1234` → formatação por dígitos
+No `Chat.tsx`, incluir `Intl.DateTimeFormat().resolvedOptions().timeZone` no body da requisição ao chat. Isso captura automaticamente o fuso do iPhone/navegador (ex: `America/Sao_Paulo`, `America/New_York`, `Europe/Lisbon`).
 
-**Abordagem**: Criar uma função utilitária `normalizeNumbersForTTS(text: string): string` com regex para detectar e converter os padrões mais comuns em PT-BR. Isso é feito client-side, sem custo extra de API.
+**Arquivo**: `src/pages/Chat.tsx` — adicionar `userTimezone` ao `JSON.stringify` na linha 66.
 
-### Arquivos alterados
-1. **`supabase/functions/elevenlabs-tts/index.ts`** — adicionar `apply_text_normalization: "on"` no body
-2. **`src/lib/tts-normalize.ts`** — novo arquivo com a função de normalização de números PT-BR
-3. **`src/pages/Chat.tsx`** — chamar `normalizeNumbersForTTS()` no `fetchTTSAudioUrl` antes de enviar o texto
+### 2. Backend: usar o timezone do cliente
+
+No `chat/index.ts`, extrair `userTimezone` do body da requisição e usá-lo no `Intl.DateTimeFormat` em vez do hardcoded `"America/Sao_Paulo"`.
+
+Aplicar o mesmo timezone dinâmico em todos os pontos que usam `America/Sao_Paulo`:
+- Linha 1131: formatação da data/hora atual no system prompt
+- Linha 80, 86, 88: formatação de eventos do calendário
+- Linhas 621-622: criação de eventos no Google Calendar
+
+**Arquivo**: `supabase/functions/chat/index.ts` — propagar `userTimezone` por todas as funções que formatam datas.
+
+### 3. Fallback
+
+Se o frontend não enviar timezone (versão antiga em cache), manter `America/Sao_Paulo` como fallback.
+
+### Resultado
+
+O Jarvis passa a saber a data e hora exatas do dispositivo do usuário, independente de onde ele esteja.
 
