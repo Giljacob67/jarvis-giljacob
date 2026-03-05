@@ -192,6 +192,30 @@ async function fetchRecentEmails(accessToken: string): Promise<string> {
   }
 }
 
+// ─── Internal LLM call (for skills that need AI processing) ─────────
+async function internalLLMCall(systemPrompt: string, userPrompt: string): Promise<string> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+  const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      stream: false,
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`LLM call failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || "Erro ao processar análise.";
+}
+
 // ─── Tool Definitions ───────────────────────────────────────────────
 const tools = [
   {
@@ -300,6 +324,106 @@ const tools = [
           search_query: { type: "string", description: "Termo de busca para filtrar memórias" },
         },
         required: ["search_query"],
+      },
+    },
+  },
+  // ─── Planner Skill ──────────────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "create_execution_plan",
+      description: "Cria um plano de execução para uma tarefa complexa que envolve múltiplas etapas. Use quando o usuário pedir algo que requer planejamento: 'organize minha semana', 'prepare o caso do cliente X', 'monte uma estratégia para...'. O plano é salvo como contexto operacional e as subtarefas podem ser criadas automaticamente.",
+      parameters: {
+        type: "object",
+        properties: {
+          plan_name: { type: "string", description: "Nome curto do plano" },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                order: { type: "integer", description: "Ordem da etapa" },
+                action: { type: "string", description: "Descrição da ação" },
+                tool: { type: "string", description: "Ferramenta a usar (create_task, create_calendar_event, etc.) ou 'manual' se requer ação humana" },
+                estimated_minutes: { type: "integer", description: "Tempo estimado em minutos" },
+              },
+              required: ["order", "action"],
+            },
+            description: "Lista de etapas do plano",
+          },
+          create_tasks: { type: "boolean", description: "Se true, cria tarefas automaticamente para cada etapa" },
+        },
+        required: ["plan_name", "steps"],
+      },
+    },
+  },
+  // ─── Legal/Advocacy Skill ───────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "analyze_legal_document",
+      description: "Analisa um texto jurídico (contrato, petição, cláusula, etc.) e retorna: resumo, cláusulas críticas, riscos, prazos e recomendações. Use quando o usuário colar ou descrever um documento legal e pedir análise, revisão ou resumo.",
+      parameters: {
+        type: "object",
+        properties: {
+          document_text: { type: "string", description: "O texto do documento jurídico a ser analisado" },
+          analysis_type: {
+            type: "string",
+            enum: ["full", "risks", "deadlines", "summary", "clauses"],
+            description: "Tipo de análise: full (completa), risks (riscos), deadlines (prazos), summary (resumo), clauses (cláusulas críticas)",
+          },
+          document_type: {
+            type: "string",
+            enum: ["contract", "petition", "decision", "agreement", "letter", "other"],
+            description: "Tipo do documento",
+          },
+        },
+        required: ["document_text", "analysis_type"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "draft_legal_outline",
+      description: "Gera um esboço/roteiro para uma peça jurídica (petição, recurso, parecer, contestação, etc.). Não gera o documento final, mas estrutura os argumentos, fundamentos legais e pontos-chave. Use quando o usuário pedir para redigir, esboçar ou montar uma peça jurídica.",
+      parameters: {
+        type: "object",
+        properties: {
+          piece_type: {
+            type: "string",
+            enum: ["petition", "appeal", "defense", "opinion", "contract_draft", "letter", "other"],
+            description: "Tipo da peça jurídica",
+          },
+          context: { type: "string", description: "Contexto do caso: fatos, partes, pretensão, fundamentos" },
+          key_arguments: {
+            type: "array",
+            items: { type: "string" },
+            description: "Argumentos principais a serem desenvolvidos",
+          },
+          legal_basis: {
+            type: "array",
+            items: { type: "string" },
+            description: "Base legal (artigos, leis, jurisprudência) a ser citada",
+          },
+        },
+        required: ["piece_type", "context"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "compare_documents",
+      description: "Compara dois textos jurídicos e identifica diferenças, conflitos, cláusulas divergentes ou alterações entre versões. Use quando o usuário pedir para comparar contratos, versões de documentos ou cláusulas.",
+      parameters: {
+        type: "object",
+        properties: {
+          document_a: { type: "string", description: "Primeiro documento (texto)" },
+          document_b: { type: "string", description: "Segundo documento (texto)" },
+          focus: { type: "string", description: "Aspecto específico para focar na comparação (ex: 'cláusula de multa', 'prazos', 'valores')" },
+        },
+        required: ["document_a", "document_b"],
       },
     },
   },
@@ -516,6 +640,154 @@ async function executeTool(
       });
     }
 
+    // ─── Planner Skill ──────────────────────────────────────────
+    case "create_execution_plan": {
+      const { plan_name, steps, create_tasks } = args;
+      
+      // Save plan as operational context
+      const planSummary = steps.map((s: any) => `${s.order}. ${s.action}${s.tool ? ` [${s.tool}]` : ""}${s.estimated_minutes ? ` ~${s.estimated_minutes}min` : ""}`).join("\n");
+      
+      await supabase.from("operational_context").upsert({
+        user_id: userId,
+        key: `plan-${plan_name.toLowerCase().replace(/\s+/g, "-")}`,
+        value: planSummary,
+        category: "project",
+        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id,key" });
+
+      // Optionally create tasks for each step
+      let tasksCreated = 0;
+      if (create_tasks) {
+        const today = new Date();
+        for (const step of steps) {
+          const dueDate = new Date(today.getTime() + (step.order) * 24 * 60 * 60 * 1000);
+          await supabase.from("tasks").insert({
+            user_id: userId,
+            title: `[${plan_name}] ${step.action}`,
+            priority: step.order <= 2 ? 1 : 2,
+            due_date: dueDate.toISOString().split("T")[0],
+            estimated_minutes: step.estimated_minutes || null,
+          });
+          tasksCreated++;
+        }
+      }
+
+      return JSON.stringify({
+        success: true,
+        message: `Plano "${plan_name}" criado com ${steps.length} etapas.${create_tasks ? ` ${tasksCreated} tarefas criadas.` : ""}`,
+        plan: planSummary,
+      });
+    }
+
+    // ─── Legal/Advocacy Skills ────────────────────────────────────
+    case "analyze_legal_document": {
+      const { document_text, analysis_type, document_type } = args;
+
+      const analysisPrompts: Record<string, string> = {
+        full: `Analise este documento jurídico${document_type ? ` (tipo: ${document_type})` : ""} de forma COMPLETA. Forneça:
+1. **Resumo executivo** (2-3 parágrafos)
+2. **Cláusulas críticas** (liste cada uma com número/referência e explicação)
+3. **Riscos identificados** (classifique como Alto/Médio/Baixo)
+4. **Prazos e datas** importantes
+5. **Recomendações** de ação
+6. **Pontos de atenção** para negociação
+
+Seja preciso, objetivo e use linguagem jurídica técnica quando apropriado.`,
+        risks: `Analise APENAS os RISCOS deste documento jurídico. Para cada risco:
+- Descrição do risco
+- Severidade (Alto/Médio/Baixo)
+- Cláusula relacionada
+- Recomendação de mitigação`,
+        deadlines: `Extraia TODOS os PRAZOS e DATAS deste documento jurídico:
+- Data ou prazo
+- O que deve acontecer
+- Consequência do descumprimento
+- Status (se possível inferir)`,
+        summary: `Faça um RESUMO EXECUTIVO conciso deste documento jurídico em 3-5 parágrafos. Inclua: partes, objeto, principais obrigações, valores e prazo.`,
+        clauses: `Liste e explique as CLÁUSULAS CRÍTICAS deste documento — aquelas que têm maior impacto jurídico ou financeiro. Para cada uma: número, texto resumido, implicação prática.`,
+      };
+
+      try {
+        const analysis = await internalLLMCall(
+          "Você é um advogado sênior brasileiro especialista em análise documental. Responda sempre em PT-BR com rigor técnico.",
+          `${analysisPrompts[analysis_type] || analysisPrompts.full}\n\n--- DOCUMENTO ---\n${document_text.slice(0, 15000)}`
+        );
+
+        return JSON.stringify({ success: true, analysis, analysis_type });
+      } catch (e) {
+        return JSON.stringify({ success: false, message: "Erro ao analisar documento." });
+      }
+    }
+
+    case "draft_legal_outline": {
+      const { piece_type, context, key_arguments, legal_basis } = args;
+
+      const pieceLabels: Record<string, string> = {
+        petition: "Petição Inicial", appeal: "Recurso", defense: "Contestação",
+        opinion: "Parecer Jurídico", contract_draft: "Minuta de Contrato",
+        letter: "Notificação Extrajudicial", other: "Peça Jurídica",
+      };
+
+      const prompt = `Crie um ESBOÇO/ROTEIRO estruturado para: ${pieceLabels[piece_type] || "Peça Jurídica"}
+
+CONTEXTO DO CASO:
+${context}
+
+${key_arguments?.length ? `ARGUMENTOS PRINCIPAIS:\n${key_arguments.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}` : ""}
+
+${legal_basis?.length ? `BASE LEGAL:\n${legal_basis.map((b: string) => `- ${b}`).join("\n")}` : ""}
+
+Forneça:
+1. **Estrutura do documento** (seções e subseções)
+2. **Síntese dos fatos** (como apresentar)
+3. **Fundamentos jurídicos** (artigos, jurisprudência aplicável)
+4. **Linha argumentativa** (sequência lógica dos argumentos)
+5. **Pedidos** (o que pedir e como formular)
+6. **Documentos a anexar** (sugestão)
+
+IMPORTANTE: Isso é um ROTEIRO, não o documento final. Seja estruturado e prático.`;
+
+      try {
+        const outline = await internalLLMCall(
+          "Você é um advogado sênior brasileiro especialista em redação jurídica. Crie roteiros práticos e bem estruturados.",
+          prompt
+        );
+
+        return JSON.stringify({ success: true, outline, piece_type: pieceLabels[piece_type] });
+      } catch (e) {
+        return JSON.stringify({ success: false, message: "Erro ao gerar esboço jurídico." });
+      }
+    }
+
+    case "compare_documents": {
+      const { document_a, document_b, focus } = args;
+
+      const prompt = `Compare os dois documentos jurídicos abaixo e identifique:
+1. **Diferenças principais** (cláusulas alteradas, adicionadas ou removidas)
+2. **Conflitos** (cláusulas contraditórias entre si)
+3. **Alterações de valores, prazos ou condições**
+4. **Impacto jurídico** das diferenças
+${focus ? `\nFOCO ESPECIAL: ${focus}` : ""}
+
+--- DOCUMENTO A ---
+${document_a.slice(0, 8000)}
+
+--- DOCUMENTO B ---
+${document_b.slice(0, 8000)}`;
+
+      try {
+        const comparison = await internalLLMCall(
+          "Você é um advogado sênior brasileiro especialista em revisão e comparação de documentos jurídicos.",
+          prompt
+        );
+
+        return JSON.stringify({ success: true, comparison });
+      } catch (e) {
+        return JSON.stringify({ success: false, message: "Erro ao comparar documentos." });
+      }
+    }
+
     default:
       return JSON.stringify({ success: false, message: `Ferramenta desconhecida: ${toolName}` });
   }
@@ -532,47 +804,81 @@ Personalidade e Tom:
 - Use humor sutil e elegante quando apropriado
 - Seja proativo: antecipe necessidades e sugira ações
 
-Integrações ativas — você TEM acesso direto a estes serviços:
-- **Google Gmail**: Você pode ver os e-mails recentes do usuário. Os dados são fornecidos abaixo em tempo real.
-- **Google Calendar**: Você pode ver a agenda da semana do usuário E CRIAR NOVOS EVENTOS usando a ferramenta create_calendar_event.
-- **Notícias**: Você tem acesso às manchetes do dia do Brasil em tempo real.
-- **Clima**: Você tem acesso ao clima atual.
-- **Tarefas**: Você pode CRIAR, LISTAR e COMPLETAR tarefas usando as ferramentas disponíveis.
-- **Memória**: Você pode SALVAR e BUSCAR informações sobre o usuário.
+═══════════════════════════════════════════
+SKILLS REGISTRY (suas habilidades modulares)
+═══════════════════════════════════════════
 
-FERRAMENTAS DISPONÍVEIS:
-Você tem acesso a ferramentas para executar ações. USE-AS quando apropriado:
-- Criar tarefa → use create_task
-- Listar tarefas → use list_tasks
-- Completar tarefa → use complete_task
-- Agendar reunião/evento → use create_calendar_event
-- Salvar preferência/fato sobre o usuário → use save_memory
-- Salvar contexto operacional (algo em andamento) → use save_operational_context
-- Buscar nas memórias → use recall_memory
+📅 SKILL: Agenda & Rotina
+- Ver agenda (dados em tempo real abaixo)
+- Criar eventos → create_calendar_event
+- Organizar semana → create_execution_plan
+
+✅ SKILL: Tarefas & Prioridades
+- Criar tarefa → create_task
+- Listar tarefas → list_tasks
+- Completar tarefa → complete_task
+
+🧠 SKILL: Memória
+- Salvar preferência/fato → save_memory
+- Salvar contexto operacional → save_operational_context
+- Buscar memórias → recall_memory
+
+📧 SKILL: E-mail (leitura)
+- Dados em tempo real fornecidos abaixo
+
+📰 SKILL: Informações
+- Notícias e clima fornecidos em tempo real abaixo
+
+📋 SKILL: Planejamento
+- Planejar tarefas complexas → create_execution_plan
+- Quando o pedido envolve múltiplas etapas, CRIE UM PLANO antes de executar
+- O plano pode gerar tarefas automaticamente (create_tasks=true)
+
+⚖️ SKILL: Advocacia & Jurídico
+- Analisar documento jurídico → analyze_legal_document (full, risks, deadlines, summary, clauses)
+- Esboçar peça jurídica → draft_legal_outline (petição, recurso, contestação, parecer, etc.)
+- Comparar documentos/versões → compare_documents
+- IMPORTANTE: Para análises jurídicas, seja RIGOROSO e TÉCNICO. Use linguagem jurídica brasileira.
+- Ao analisar riscos, classifique como Alto/Médio/Baixo com justificativa.
+- Ao extrair prazos, sugira criar tarefas com create_task para cada prazo importante.
+
+═══════════════════════════════════════════
+PLANNER (para pedidos complexos)
+═══════════════════════════════════════════
+
+Quando o usuário fizer um pedido complexo que envolve múltiplas etapas:
+1. Use create_execution_plan para criar o plano
+2. Comunique o plano de forma resumida ao usuário
+3. Pergunte se deseja executar (se envolve ações irreversíveis)
+4. Execute as etapas usando as ferramentas disponíveis
+
+Exemplos de pedidos que ativam o Planner:
+- "Organize minha semana"
+- "Prepare o caso do cliente X"
+- "Monte uma estratégia para o contrato Y"
+- "Analise este contrato e crie tarefas para cada prazo"
+
+═══════════════════════════════════════════
+REGRAS DE OPERAÇÃO
+═══════════════════════════════════════════
 
 CONFIRMAÇÕES INTELIGENTES:
-- Para ações REVERSÍVEIS (criar tarefa, salvar memória): execute diretamente e confirme o que fez.
-- Para ações que ENVOLVEM TERCEIROS (criar evento, enviar email): confirme ANTES de executar.
+- Ações REVERSÍVEIS (criar tarefa, salvar memória): execute diretamente.
+- Ações que ENVOLVEM TERCEIROS (criar evento, enviar email): confirme ANTES.
 
 GOVERNANÇA DE MEMÓRIA:
-- Salve automaticamente como MEMÓRIA LONGA (save_memory) quando o usuário:
-  • mencionar uma preferência ("prefiro reuniões de manhã")
-  • compartilhar fato pessoal ("meu cachorro se chama Oliver")
-  • indicar hábito ou rotina ("sempre corro às 6h")
-  • corrigir o Jarvis ("não, meu nome é Gilberto, não Roberto")
-- Salve como CONTEXTO OPERACIONAL (save_operational_context) quando:
-  • algo estiver em andamento ("o processo X está em fase de recurso")
-  • houver prazo ou follow-up ("preciso retornar ao cliente Y até sexta")
-  • estado temporário relevante ("estou trabalhando no contrato Z")
-- NÃO salve: informações triviais, perguntas genéricas, ou dados que já estão nos dados em tempo real.
-- Ao salvar, seja silencioso sobre o ato — não diga "salvei na memória" a menos que o usuário peça explicitamente.
+- Salve automaticamente como MEMÓRIA LONGA quando o usuário:
+  • mencionar preferência, fato pessoal, hábito ou corrigir o Jarvis
+- Salve como CONTEXTO OPERACIONAL quando:
+  • algo estiver em andamento, houver prazo ou follow-up
+- NÃO salve informações triviais. Seja silencioso ao salvar.
 
-IMPORTANTE: Quando o usuário perguntar sobre e-mails ou agenda, use os DADOS REAIS fornecidos abaixo para responder diretamente.
+IMPORTANTE: Use os DADOS REAIS fornecidos abaixo para responder sobre e-mails, agenda, notícias e clima.
 
 Estilo de resposta:
 - Respostas curtas e objetivas para perguntas simples
 - Respostas detalhadas e estruturadas para questões complexas
-- Quando executar uma ferramenta, informe o resultado de forma natural e concisa`;
+- Quando executar ferramentas, informe o resultado de forma natural e concisa`;
 
 
 function buildSystemPrompt(profile?: {
