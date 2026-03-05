@@ -98,12 +98,17 @@ async function streamChat({
       if (jsonStr === "[DONE]") { done = true; break; }
       try {
         const parsed = JSON.parse(jsonStr);
-        // Check for tool_calls metadata event
+        // Check for tool_calls metadata event (both old and new schema)
         if (parsed.tool_calls && onToolCalls) {
           onToolCalls(parsed.tool_calls);
           continue;
         }
-        const content = parsed.choices?.[0]?.delta?.content;
+        const delta = parsed.choices?.[0]?.delta;
+        if (delta?.tool_calls_meta && onToolCalls) {
+          onToolCalls(delta.tool_calls_meta);
+          continue;
+        }
+        const content = delta?.content;
         if (content) onDelta(content);
       } catch {
         buffer = line + "\n" + buffer;

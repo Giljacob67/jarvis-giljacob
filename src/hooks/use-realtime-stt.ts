@@ -55,12 +55,16 @@ export function useRealtimeSTT({
     setIsConnecting(true);
 
     try {
-      // 1. Get single-use token
+      // 1. Get single-use token (use user session if available)
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      const authToken = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
       const tokenResp = await fetch(SCRIBE_TOKEN_URL, {
         method: "POST",
         headers: {
           apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${authToken}`,
           "Content-Type": "application/json",
         },
       });
