@@ -1,35 +1,64 @@
 
 
-## Problema
+## Plano: Métricas de Latência + Limite de Concorrência nas Tools
 
-O Jarvis **não recebe o fuso horário real do usuário**. A data/hora no system prompt está **hardcoded para `America/Sao_Paulo`** (linha 1131 de `chat/index.ts`). As coordenadas que você forneceu são usadas apenas para o clima, não para determinar o fuso horário.
+### 1. Timestamp Logging no Frontend (Chat.tsx)
 
-Além disso, o frontend (`Chat.tsx`, linha 66) não envia nenhuma informação de timezone — apenas `messages`, `profile` e `jarvisMode`.
+Adicionar instrumentação de latência em pontos-chave do pipeline:
 
-## Solução
+- **`t0_speechEnd`**: capturado no momento em que o STT faz commit (VAD end-of-speech) ou o usuário clica em enviar
+- **`t1_firstDelta`**: timestamp do primeiro `onDelta` recebido do SSE
+- **`t2_firstTTSPlay`**: timestamp do `audio.play()` do primeiro chunk TTS
 
-### 1. Frontend: enviar o timezone real do dispositivo
+Logs emitidos via `console.log` com prefixo `[LATENCY]`:
+```
+[LATENCY] speechEnd→firstDelta: 420ms
+[LATENCY] speechEnd→firstAudio: 680ms  
+[LATENCY] firstDelta→firstAudio: 260ms
+```
 
-No `Chat.tsx`, incluir `Intl.DateTimeFormat().resolvedOptions().timeZone` no body da requisição ao chat. Isso captura automaticamente o fuso do iPhone/navegador (ex: `America/Sao_Paulo`, `America/New_York`, `Europe/Lisbon`).
+**Onde**:
+- `sendMessage`: registrar `t0` no início
+- `upsertAssistant` (primeiro chunk): registrar `t1`
+- `processTTSQueue` (primeiro `audio.play()`): registrar `t2`
+- Usar refs (`latencyRef`) para armazenar os timestamps sem re-renders
 
-**Arquivo**: `src/pages/Chat.tsx` — adicionar `userTimezone` ao `JSON.stringify` na linha 66.
+### 2. Limite de Concorrência nas Tools (chat/index.ts)
 
-### 2. Backend: usar o timezone do cliente
+Atualmente `Promise.all(toolCalls.map(...))` executa todas em paralelo sem limite. Adicionar um helper `pMap` com concorrência máxima de 3:
 
-No `chat/index.ts`, extrair `userTimezone` do body da requisição e usá-lo no `Intl.DateTimeFormat` em vez do hardcoded `"America/Sao_Paulo"`.
+```typescript
+async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+```
 
-Aplicar o mesmo timezone dinâmico em todos os pontos que usam `America/Sao_Paulo`:
-- Linha 1131: formatação da data/hora atual no system prompt
-- Linha 80, 86, 88: formatação de eventos do calendário
-- Linhas 621-622: criação de eventos no Google Calendar
+Substituir `Promise.all(toolResultsPromises)` por `pMap(toolCalls, executeOneTool, 3)`.
 
-**Arquivo**: `supabase/functions/chat/index.ts` — propagar `userTimezone` por todas as funções que formatam datas.
+**Arquivo**: `supabase/functions/chat/index.ts` linhas 1213-1231
 
-### 3. Fallback
+### 3. Métricas no Backend (chat/index.ts)
 
-Se o frontend não enviar timezone (versão antiga em cache), manter `America/Sao_Paulo` como fallback.
+Adicionar logs de timing no backend também:
+- `t_toolsStart` e `t_toolsEnd` ao redor da execução paralela
+- Log: `[PERF] tools executed in Xms (N tools, concurrency=3)`
+- `t_preambleWrite`: timestamp do envio do preamble SSE
 
-### Resultado
+### Resumo de Arquivos
 
-O Jarvis passa a saber a data e hora exatas do dispositivo do usuário, independente de onde ele esteja.
+| Arquivo | Alteração |
+|---|---|
+| `src/pages/Chat.tsx` | Adicionar refs de latência, logs em `sendMessage`, `upsertAssistant`, `processTTSQueue` |
+| `supabase/functions/chat/index.ts` | Helper `pMap` com concurrency=3, logs de timing no backend |
+
+Não há QA automatizado possível no iPhone via browser tools -- os testes manuais ficam com você usando os logs `[LATENCY]` e `[PERF]` que serão emitidos no console.
 
