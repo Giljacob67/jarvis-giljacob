@@ -974,8 +974,47 @@ function buildSystemPrompt(profile?: {
   memories?: string[];
   focus_mode?: boolean;
   focus_until?: string;
-}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string, operationalContext?: string[]): string {
+  _allProfiles?: { personal?: any; professional?: any };
+}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string, operationalContext?: string[], jarvisMode?: string): string {
   let prompt = BASE_SYSTEM_PROMPT;
+
+  // ─── Dynamic Mode Instructions ────────────────────────────────
+  const mode = jarvisMode || "personal";
+  const allProfiles = profile?._allProfiles;
+  
+  if (allProfiles) {
+    prompt += `\n\n═══════════════════════════════════════════
+MODO DINÂMICO
+═══════════════════════════════════════════
+
+Seu MODO ATUAL é: **${mode === "professional" ? "PROFISSIONAL" : "PESSOAL"}**. Aplique APENAS o comportamento deste modo.
+
+--- MODO PESSOAL ---`;
+    if (allProfiles.personal) {
+      if (allProfiles.personal.instructions) prompt += `\nInstruções: ${allProfiles.personal.instructions}`;
+      if (allProfiles.personal.user_name) prompt += `\nNome do usuário: ${allProfiles.personal.user_name}`;
+      if (allProfiles.personal.user_profession) prompt += `\nProfissão: ${allProfiles.personal.user_profession}`;
+    } else {
+      prompt += `\n(nenhum perfil pessoal configurado)`;
+    }
+
+    prompt += `\n\n--- MODO PROFISSIONAL ---`;
+    if (allProfiles.professional) {
+      if (allProfiles.professional.instructions) prompt += `\nInstruções: ${allProfiles.professional.instructions}`;
+      if (allProfiles.professional.user_name) prompt += `\nNome do usuário: ${allProfiles.professional.user_name}`;
+      if (allProfiles.professional.user_profession) prompt += `\nProfissão: ${allProfiles.professional.user_profession}`;
+    } else {
+      prompt += `\n(nenhum perfil profissional configurado)`;
+    }
+
+    prompt += `\n
+REGRAS DE TROCA DE MODO:
+1. Quando o usuário pedir para trocar de modo (ex: "modo profissional", "modo pessoal", "entrar em modo profissional"), confirme brevemente e PREFIXE sua resposta com [MODE:professional] ou [MODE:personal] (exatamente assim, com colchetes).
+2. Após o marcador [MODE:xxx], escreva a confirmação. Exemplo: "[MODE:professional] Certo. Modo profissional ativado."
+3. Se detectar que o assunto é claramente do outro modo (ex: assunto jurídico em modo pessoal), SUGIRA a troca: "Parece um assunto profissional. Deseja que eu ative o modo profissional?"
+4. NÃO troque automaticamente — apenas sugira.
+5. Use APENAS o marcador [MODE:xxx] quando o usuário EXPLICITAMENTE pedir para trocar.`;
+  }
 
   if (currentDateTime) {
     prompt += `\n\n🕐 DATA E HORA ATUAL: ${currentDateTime}\nUse SEMPRE esta data/hora como referência.`;
@@ -988,15 +1027,26 @@ function buildSystemPrompt(profile?: {
 
   if (!profile) return prompt;
 
-  if (profile.instructions) prompt += `\n\nInstruções adicionais:\n${profile.instructions}`;
+  // Only add profile-specific info if no allProfiles (backward compat)
+  if (!allProfiles) {
+    if (profile.instructions) prompt += `\n\nInstruções adicionais:\n${profile.instructions}`;
 
-  const personalInfo: string[] = [];
-  if (profile.user_name) personalInfo.push(`Nome: ${profile.user_name}`);
-  if (profile.user_profession) personalInfo.push(`Profissão: ${profile.user_profession}`);
-  if (profile.user_preferences && Object.keys(profile.user_preferences).length > 0) {
-    Object.entries(profile.user_preferences).forEach(([k, v]) => personalInfo.push(`${k}: ${v}`));
+    const personalInfo: string[] = [];
+    if (profile.user_name) personalInfo.push(`Nome: ${profile.user_name}`);
+    if (profile.user_profession) personalInfo.push(`Profissão: ${profile.user_profession}`);
+    if (profile.user_preferences && Object.keys(profile.user_preferences).length > 0) {
+      Object.entries(profile.user_preferences).forEach(([k, v]) => personalInfo.push(`${k}: ${v}`));
+    }
+    if (personalInfo.length > 0) prompt += `\n\nInformações sobre o usuário:\n${personalInfo.join("\n")}`;
+  } else {
+    // Add user_preferences from active profile (for city, etc.)
+    const activeP = allProfiles[mode as "personal" | "professional"] || allProfiles.personal;
+    if (activeP?.user_preferences && Object.keys(activeP.user_preferences).length > 0) {
+      const prefs: string[] = [];
+      Object.entries(activeP.user_preferences).forEach(([k, v]) => prefs.push(`${k}: ${v}`));
+      prompt += `\n\nPreferências do usuário:\n${prefs.join("\n")}`;
+    }
   }
-  if (personalInfo.length > 0) prompt += `\n\nInformações sobre o usuário:\n${personalInfo.join("\n")}`;
 
   if (profile.memories && profile.memories.length > 0) {
     prompt += `\n\n🧠 MEMÓRIA LONGA:\n${profile.memories.map((m) => `- ${m}`).join("\n")}`;
@@ -1021,7 +1071,7 @@ serve(async (req) => {
   }
 
   try {
-    const { messages, profile } = await req.json();
+    const { messages, profile, jarvisMode } = await req.json();
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
@@ -1083,7 +1133,7 @@ serve(async (req) => {
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
     const currentDateTime = formatter.format(now);
-    const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime, operationalContext);
+    const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime, operationalContext, jarvisMode);
 
     const allMessages = [
       { role: "system", content: systemPrompt },
