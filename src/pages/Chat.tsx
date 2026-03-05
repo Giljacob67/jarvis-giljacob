@@ -169,8 +169,8 @@ if (typeof window !== "undefined") {
   window.addEventListener("click", unlock, true);
 }
 
-// ─── TTS for a single chunk (returns the audio element for barge-in control) ─
-async function fetchTTSAudio(text: string, voiceSettings?: any): Promise<HTMLAudioElement | null> {
+// ─── TTS fetch: returns blob URL for playback ──────────────────────
+async function fetchTTSAudioUrl(text: string, voiceSettings?: any): Promise<string | null> {
   try {
     const cleanText = stripMarkdown(text);
     if (!cleanText || cleanText.length < 2) return null;
@@ -196,33 +196,73 @@ async function fetchTTSAudio(text: string, voiceSettings?: any): Promise<HTMLAud
     if (!response.ok) return null;
 
     const audioBlob = await response.blob();
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = sharedAudio || new Audio();
-    audio.src = audioUrl;
-    return audio;
+    return URL.createObjectURL(audioBlob);
   } catch {
     return null;
   }
 }
 
-// ─── Semantic sentence splitter ──────────────────────────────────────
-// Detects sentence boundaries: . ! ? or newline, but not inside abbreviations
+// ─── Aggressive sentence splitter for low-latency TTS ───────────────
+// Splits on . ! ? newline, AND on , ; : — when chunk exceeds MAX_CHUNK_CHARS
+const MAX_CHUNK_CHARS = 150;
+
 function extractSentences(buffer: string): { sentences: string[]; remainder: string } {
   const sentences: string[] = [];
-  // Split on sentence-ending punctuation followed by space or end, or newlines
-  const regex = /[^.!?\n]*[.!?]+[\s]|[^\n]+\n/g;
+  // Primary split: sentence-ending punctuation or newline
+  const primaryRegex = /[^.!?\n]*[.!?]+[\s]|[^\n]+\n/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(buffer)) !== null) {
+  while ((match = primaryRegex.exec(buffer)) !== null) {
     const sentence = buffer.slice(lastIndex, match.index + match[0].length).trim();
     if (sentence.length > 0) {
-      sentences.push(sentence);
+      // Sub-split long sentences at secondary punctuation
+      splitLongChunk(sentence, sentences);
     }
     lastIndex = match.index + match[0].length;
   }
 
-  return { sentences, remainder: buffer.slice(lastIndex) };
+  // If remainder is already long enough, try splitting at secondary punctuation
+  const remainder = buffer.slice(lastIndex);
+  if (remainder.length > MAX_CHUNK_CHARS) {
+    const secondaryRegex = /[,;:—]+\s/g;
+    let subLast = 0;
+    let subMatch: RegExpExecArray | null;
+    let didSplit = false;
+    while ((subMatch = secondaryRegex.exec(remainder)) !== null) {
+      const part = remainder.slice(subLast, subMatch.index + subMatch[0].length).trim();
+      if (part.length > 0) {
+        sentences.push(part);
+        didSplit = true;
+      }
+      subLast = subMatch.index + subMatch[0].length;
+    }
+    if (didSplit) {
+      return { sentences, remainder: remainder.slice(subLast) };
+    }
+  }
+
+  return { sentences, remainder };
+}
+
+function splitLongChunk(text: string, out: string[]) {
+  if (text.length <= MAX_CHUNK_CHARS) {
+    out.push(text);
+    return;
+  }
+  // Try splitting at , ; : —
+  const regex = /[,;:—]+\s/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const part = text.slice(last, match.index + match[0].length).trim();
+    if (part.length > 0) out.push(part);
+    last = match.index + match[0].length;
+  }
+  const tail = text.slice(last).trim();
+  if (tail.length > 0) out.push(tail);
+  // If no splits happened, push the whole thing
+  if (last === 0) out.push(text);
 }
 
 const Chat = () => {
@@ -303,41 +343,69 @@ const Chat = () => {
     setIsSpeaking(false);
   }, []);
 
-  // ─── Sequential TTS chunk player ────────────────────────────────
+  // ─── Sequential TTS chunk player with 1-chunk lookahead ──────────
   const processTTSQueue = useCallback(async (voiceSettings?: any) => {
-    if (ttsPlayingRef.current) return; // already playing
+    if (ttsPlayingRef.current) return;
     ttsPlayingRef.current = true;
+
+    let prefetchedUrl: string | null = null;
+    let prefetchPromise: Promise<string | null> | null = null;
 
     while (ttsQueueRef.current.length > 0) {
       if (ttsAbortRef.current) break;
 
       const chunk = ttsQueueRef.current.shift()!;
-      const audio = await fetchTTSAudio(chunk, voiceSettings);
+
+      // Use prefetched URL if available, otherwise fetch now
+      let audioUrl: string | null;
+      if (prefetchedUrl !== null) {
+        audioUrl = prefetchedUrl;
+        prefetchedUrl = null;
+      } else if (prefetchPromise) {
+        audioUrl = await prefetchPromise;
+        prefetchPromise = null;
+      } else {
+        audioUrl = await fetchTTSAudioUrl(chunk, voiceSettings);
+      }
 
       if (ttsAbortRef.current) break;
 
-      if (audio) {
+      // Start prefetching next chunk (lookahead)
+      if (ttsQueueRef.current.length > 0) {
+        const nextChunk = ttsQueueRef.current[0];
+        prefetchPromise = fetchTTSAudioUrl(nextChunk, voiceSettings);
+      }
+
+      if (audioUrl) {
+        const audio = sharedAudio || new Audio();
+        audio.src = audioUrl;
         currentAudioRef.current = audio;
         setIsSpeaking(true);
 
         await new Promise<void>((resolve) => {
           audio.onended = () => {
             currentAudioRef.current = null;
+            URL.revokeObjectURL(audioUrl!);
             resolve();
           };
           audio.onerror = () => {
             currentAudioRef.current = null;
+            URL.revokeObjectURL(audioUrl!);
             resolve();
           };
           audio.play().catch(() => {
-            // Fallback: try new Audio element
-            const fallback = new Audio(audio.src);
+            const fallback = new Audio(audioUrl!);
             currentAudioRef.current = fallback;
             fallback.onended = () => { currentAudioRef.current = null; resolve(); };
             fallback.onerror = () => { currentAudioRef.current = null; resolve(); };
             fallback.play().catch(() => { currentAudioRef.current = null; resolve(); });
           });
         });
+
+        // After playback, resolve the prefetch if it's done
+        if (prefetchPromise && ttsQueueRef.current.length > 0) {
+          // Don't await here, it'll be awaited on next loop iteration
+        }
 
         if (ttsAbortRef.current) break;
       }
