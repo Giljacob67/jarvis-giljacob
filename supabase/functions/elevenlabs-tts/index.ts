@@ -14,7 +14,7 @@ serve(async (req) => {
   }
 
   try {
-    const { text, voiceId, speed, stability, similarity_boost, style } = await req.json();
+    const { text, voiceId, speed, stability, similarity_boost, style, model } = await req.json();
     const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
 
     if (!ELEVENLABS_API_KEY) {
@@ -37,8 +37,12 @@ serve(async (req) => {
     const safeSimilarity = Math.min(1, Math.max(0, similarity_boost ?? 0.9));
     const safeStyle = Math.min(1, Math.max(0, style ?? 0.3));
 
+    // Use turbo model for lower latency, fallback to multilingual
+    const modelId = model || "eleven_turbo_v2_5";
+
+    // Use streaming endpoint for faster time-to-first-byte
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voice}?output_format=mp3_44100_128`,
+      `https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream?output_format=mp3_44100_128`,
       {
         method: "POST",
         headers: {
@@ -47,7 +51,7 @@ serve(async (req) => {
         },
         body: JSON.stringify({
           text: truncatedText,
-          model_id: "eleven_multilingual_v2",
+          model_id: modelId,
           voice_settings: {
             stability: safeStability,
             similarity_boost: safeSimilarity,
@@ -68,12 +72,12 @@ serve(async (req) => {
       );
     }
 
-    const audioBuffer = await response.arrayBuffer();
-
-    return new Response(audioBuffer, {
+    // Stream the response directly back to the client
+    return new Response(response.body, {
       headers: {
         ...corsHeaders,
         "Content-Type": "audio/mpeg",
+        "Transfer-Encoding": "chunked",
       },
     });
   } catch (e) {

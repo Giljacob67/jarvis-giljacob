@@ -131,13 +131,12 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-// Shared Audio element for iOS Safari compatibility
+// ─── Shared Audio + iOS unlock ───────────────────────────────────────
 let sharedAudio: HTMLAudioElement | null = null;
 
 function unlockAudio() {
   if (sharedAudio) return;
   sharedAudio = new Audio();
-  // Play a silent data URI to unlock audio on iOS
   sharedAudio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
   sharedAudio.play().then(() => {
     sharedAudio!.pause();
@@ -145,7 +144,6 @@ function unlockAudio() {
   }).catch(() => {});
 }
 
-// Unlock audio on first user interaction (required by Safari autoplay policy)
 if (typeof window !== "undefined") {
   const unlock = () => {
     unlockAudio();
@@ -156,10 +154,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("click", unlock, true);
 }
 
-async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boolean> {
+// ─── TTS for a single chunk (returns the audio element for barge-in control) ─
+async function fetchTTSAudio(text: string, voiceSettings?: any): Promise<HTMLAudioElement | null> {
   try {
     const cleanText = stripMarkdown(text);
-    if (!cleanText) return false;
+    if (!cleanText || cleanText.length < 2) return null;
 
     const vs = voiceSettings || {};
     const response = await fetch(TTS_URL, {
@@ -179,29 +178,36 @@ async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boo
       }),
     });
 
-    if (!response.ok) return false;
+    if (!response.ok) return null;
 
     const audioBlob = await response.blob();
     const audioUrl = URL.createObjectURL(audioBlob);
-    
-    // Reuse unlocked audio element for iOS, or create new one
     const audio = sharedAudio || new Audio();
     audio.src = audioUrl;
-    
-    return new Promise((resolve) => {
-      audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(true); };
-      audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(false); };
-      audio.play().catch(() => {
-        // Final fallback: try creating a new Audio element
-        const fallback = new Audio(audioUrl);
-        fallback.onended = () => { URL.revokeObjectURL(audioUrl); resolve(true); };
-        fallback.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(false); };
-        fallback.play().catch(() => { URL.revokeObjectURL(audioUrl); resolve(false); });
-      });
-    });
+    return audio;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// ─── Semantic sentence splitter ──────────────────────────────────────
+// Detects sentence boundaries: . ! ? or newline, but not inside abbreviations
+function extractSentences(buffer: string): { sentences: string[]; remainder: string } {
+  const sentences: string[] = [];
+  // Split on sentence-ending punctuation followed by space or end, or newlines
+  const regex = /[^.!?\n]*[.!?]+[\s]|[^\n]+\n/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(buffer)) !== null) {
+    const sentence = buffer.slice(lastIndex, match.index + match[0].length).trim();
+    if (sentence.length > 0) {
+      sentences.push(sentence);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  return { sentences, remainder: buffer.slice(lastIndex) };
 }
 
 const Chat = () => {
@@ -218,6 +224,12 @@ const Chat = () => {
   const voiceTranscriptRef = useRef("");
   const shouldAutoSendRef = useRef(false);
   const [activeProfile, setActiveProfile] = useState<any>(null);
+
+  // ─── Barge-in & TTS chunk queue refs ─────────────────────────────
+  const ttsAbortRef = useRef(false);
+  const ttsQueueRef = useRef<string[]>([]);
+  const ttsPlayingRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const stt = useSpeechRecognition({
     onResult: (transcript) => {
@@ -259,6 +271,76 @@ const Chat = () => {
   const voiceIsListening = useNativeSTT ? stt.isListening : mediaSTT.isListening;
   const voiceIsSupported = useNativeSTT ? stt.isSupported : mediaSTT.isSupported;
   const voiceIsTranscribing = !useNativeSTT && mediaSTT.isTranscribing;
+
+  // ─── Stop all TTS (barge-in) ─────────────────────────────────────
+  const stopAllTTS = useCallback(() => {
+    ttsAbortRef.current = true;
+    ttsQueueRef.current = [];
+    ttsPlayingRef.current = false;
+    // Stop current audio immediately
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+    }
+    // Also stop Web Speech API fallback
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  }, []);
+
+  // ─── Sequential TTS chunk player ────────────────────────────────
+  const processTTSQueue = useCallback(async (voiceSettings?: any) => {
+    if (ttsPlayingRef.current) return; // already playing
+    ttsPlayingRef.current = true;
+
+    while (ttsQueueRef.current.length > 0) {
+      if (ttsAbortRef.current) break;
+
+      const chunk = ttsQueueRef.current.shift()!;
+      const audio = await fetchTTSAudio(chunk, voiceSettings);
+
+      if (ttsAbortRef.current) break;
+
+      if (audio) {
+        currentAudioRef.current = audio;
+        setIsSpeaking(true);
+
+        await new Promise<void>((resolve) => {
+          audio.onended = () => {
+            currentAudioRef.current = null;
+            resolve();
+          };
+          audio.onerror = () => {
+            currentAudioRef.current = null;
+            resolve();
+          };
+          audio.play().catch(() => {
+            // Fallback: try new Audio element
+            const fallback = new Audio(audio.src);
+            currentAudioRef.current = fallback;
+            fallback.onended = () => { currentAudioRef.current = null; resolve(); };
+            fallback.onerror = () => { currentAudioRef.current = null; resolve(); };
+            fallback.play().catch(() => { currentAudioRef.current = null; resolve(); });
+          });
+        });
+
+        if (ttsAbortRef.current) break;
+      }
+    }
+
+    ttsPlayingRef.current = false;
+    if (!ttsAbortRef.current && ttsQueueRef.current.length === 0) {
+      setIsSpeaking(false);
+    }
+  }, []);
+
+  // ─── Enqueue a sentence for TTS ──────────────────────────────────
+  const enqueueTTSChunk = useCallback((sentence: string, voiceSettings?: any) => {
+    if (ttsAbortRef.current) return;
+    ttsQueueRef.current.push(sentence);
+    // Start processing if not already running
+    processTTSQueue(voiceSettings);
+  }, [processTTSQueue]);
 
   // Load or create conversation
   useEffect(() => {
@@ -365,6 +447,10 @@ const Chat = () => {
     const text = input.trim();
     if (!text || isLoading) return;
 
+    // Reset abort flag for new response
+    ttsAbortRef.current = false;
+    ttsQueueRef.current = [];
+
     const userMsg: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -383,6 +469,8 @@ const Chat = () => {
     }));
 
     let assistantContent = "";
+    // Buffer for accumulating text to detect sentence boundaries
+    let sentenceBuffer = "";
 
     const upsertAssistant = (chunk: string) => {
       assistantContent += chunk;
@@ -399,6 +487,16 @@ const Chat = () => {
           { id: "stream-" + Date.now(), role: "assistant", content, timestamp: new Date() },
         ];
       });
+
+      // ─── Semantic chunking for TTS ─────────────────────────────
+      if (ttsEnabled && !ttsAbortRef.current) {
+        sentenceBuffer += chunk;
+        const { sentences, remainder } = extractSentences(sentenceBuffer);
+        sentenceBuffer = remainder;
+        for (const sentence of sentences) {
+          enqueueTTSChunk(sentence, activeProfile?.voice_settings);
+        }
+      }
     };
 
     try {
@@ -411,18 +509,11 @@ const Chat = () => {
           if (assistantContent) {
             persistMessage("assistant", assistantContent);
           }
-          if (ttsEnabled && assistantContent) {
-            setIsSpeaking(true);
-            const played = await playElevenLabsTTS(assistantContent, activeProfile?.voice_settings);
-            if (!played) {
-              const utterance = new SpeechSynthesisUtterance(stripMarkdown(assistantContent));
-              utterance.lang = "pt-BR";
-              utterance.onend = () => setIsSpeaking(false);
-              utterance.onerror = () => setIsSpeaking(false);
-              window.speechSynthesis.speak(utterance);
-              return;
-            }
-            setIsSpeaking(false);
+
+          // Flush remaining text in sentence buffer
+          if (ttsEnabled && sentenceBuffer.trim() && !ttsAbortRef.current) {
+            enqueueTTSChunk(sentenceBuffer.trim(), activeProfile?.voice_settings);
+            sentenceBuffer = "";
           }
         },
         onError: (msg) => {
@@ -435,7 +526,7 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile]);
+  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile, enqueueTTSChunk]);
 
   const exportChat = () => {
     const text = messages
@@ -451,7 +542,12 @@ const Chat = () => {
     toast.success("Chat exportado!");
   };
 
+  // ─── Barge-in: stop TTS before starting to listen ──────────────
   const handleOrbDown = () => {
+    // Barge-in: immediately stop Jarvis speaking
+    if (isSpeaking || ttsPlayingRef.current) {
+      stopAllTTS();
+    }
     voiceTranscriptRef.current = "";
     shouldAutoSendRef.current = true;
     if (useNativeSTT) stt.start(); else mediaSTT.start();
@@ -475,9 +571,8 @@ const Chat = () => {
         </div>
         <button
           onClick={() => {
-            if (isSpeaking) window.speechSynthesis.cancel();
+            stopAllTTS();
             setTtsEnabled(!ttsEnabled);
-            setIsSpeaking(false);
           }}
           className={`p-2 rounded-xl transition-all ${
             ttsEnabled ? "bg-accent/20 text-accent" : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
