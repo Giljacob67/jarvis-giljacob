@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, MessageCircle, Mail, Calendar, FolderOpen,
-  StickyNote, Send, Zap, ClipboardList, Settings, X
+  StickyNote, Send, Zap, ClipboardList, Settings, X, CheckSquare
 } from "lucide-react";
 import JarvisAvatar from "./JarvisAvatar";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/chat", icon: MessageCircle, label: "Chat" },
+  { to: "/tasks", icon: CheckSquare, label: "Tarefas" },
   { to: "/emails", icon: Mail, label: "E-mails" },
   { to: "/agenda", icon: Calendar, label: "Agenda" },
   { to: "/files", icon: FolderOpen, label: "Arquivos" },
