@@ -257,6 +257,52 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "save_memory",
+      description: "Salva uma informação permanente sobre o usuário (preferência, fato pessoal, hábito). Use quando o usuário mencionar algo sobre si mesmo que pode ser útil no futuro. Exemplos: 'prefiro reuniões de manhã', 'meu cachorro se chama Oliver', 'sou advogado tributarista'.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "A informação a ser memorizada" },
+          category: { type: "string", enum: ["preference", "personal", "professional", "habit", "general"], description: "Categoria da memória" },
+        },
+        required: ["content", "category"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_operational_context",
+      description: "Salva ou atualiza um contexto operacional temporário — algo que está em andamento. Exemplos: 'processo X em fase de recurso', 'aguardando retorno do cliente Y', 'prazo do contrato Z vence dia 15'. Use quando o usuário mencionar algo em andamento que precisa ser lembrado nos próximos dias.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string", description: "Identificador curto e único (ex: 'processo-recurso-xyz', 'cliente-retorno-y')" },
+          value: { type: "string", description: "Descrição do contexto" },
+          category: { type: "string", enum: ["project", "deadline", "follow_up", "pending", "general"], description: "Tipo de contexto" },
+          expires_in_days: { type: "integer", description: "Dias até expirar (padrão: 30)" },
+        },
+        required: ["key", "value"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recall_memory",
+      description: "Busca nas memórias e contextos operacionais do usuário. Use quando o usuário perguntar 'o que você sabe sobre mim?', 'lembra daquele processo?', ou quando precisar consultar algo salvo anteriormente.",
+      parameters: {
+        type: "object",
+        properties: {
+          search_query: { type: "string", description: "Termo de busca para filtrar memórias" },
+        },
+        required: ["search_query"],
+      },
+    },
+  },
 ];
 
 // ─── Tool Execution ─────────────────────────────────────────────────
@@ -404,6 +450,72 @@ async function executeTool(
       }
     }
 
+    case "save_memory": {
+      const { content, category } = args;
+      const { error } = await supabase.from("jarvis_memories").insert({
+        user_id: userId,
+        content,
+        category: category || "general",
+      });
+
+      if (error) return JSON.stringify({ success: false, error: error.message });
+      return JSON.stringify({ success: true, message: `Memória salva: "${content}"` });
+    }
+
+    case "save_operational_context": {
+      const { key, value, category: ctxCategory, expires_in_days } = args;
+      const expiresAt = new Date(Date.now() + (expires_in_days || 30) * 24 * 60 * 60 * 1000).toISOString();
+
+      // Upsert by user_id + key
+      const { error } = await supabase.from("operational_context").upsert({
+        user_id: userId,
+        key,
+        value,
+        category: ctxCategory || "general",
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id,key" });
+
+      if (error) return JSON.stringify({ success: false, error: error.message });
+      return JSON.stringify({ success: true, message: `Contexto operacional salvo: "${key}"` });
+    }
+
+    case "recall_memory": {
+      const { search_query } = args;
+      
+      // Search long-term memories
+      const { data: memories } = await supabase
+        .from("jarvis_memories")
+        .select("content, category, created_at")
+        .eq("user_id", userId)
+        .ilike("content", `%${search_query}%`)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      // Search operational context
+      const { data: opCtx } = await supabase
+        .from("operational_context")
+        .select("key, value, category, updated_at")
+        .eq("user_id", userId)
+        .or(`key.ilike.%${search_query}%,value.ilike.%${search_query}%`)
+        .order("updated_at", { ascending: false })
+        .limit(10);
+
+      const memLines = (memories || []).map((m: any) => `- [${m.category}] ${m.content}`);
+      const opLines = (opCtx || []).map((o: any) => `- [${o.category}] ${o.key}: ${o.value}`);
+
+      const result = [
+        ...(memLines.length > 0 ? ["**Memórias:**", ...memLines] : []),
+        ...(opLines.length > 0 ? ["**Contexto operacional:**", ...opLines] : []),
+      ].join("\n");
+
+      return JSON.stringify({
+        success: true,
+        found: memLines.length + opLines.length,
+        data: result || "Nenhuma memória encontrada para essa busca.",
+      });
+    }
+
     default:
       return JSON.stringify({ success: false, message: `Ferramenta desconhecida: ${toolName}` });
   }
@@ -426,32 +538,42 @@ Integrações ativas — você TEM acesso direto a estes serviços:
 - **Notícias**: Você tem acesso às manchetes do dia do Brasil em tempo real.
 - **Clima**: Você tem acesso ao clima atual.
 - **Tarefas**: Você pode CRIAR, LISTAR e COMPLETAR tarefas usando as ferramentas disponíveis.
+- **Memória**: Você pode SALVAR e BUSCAR informações sobre o usuário.
 
 FERRAMENTAS DISPONÍVEIS:
-Você tem acesso a ferramentas para executar ações. USE-AS quando o usuário pedir para:
+Você tem acesso a ferramentas para executar ações. USE-AS quando apropriado:
 - Criar tarefa → use create_task
 - Listar tarefas → use list_tasks
 - Completar tarefa → use complete_task
 - Agendar reunião/evento → use create_calendar_event
+- Salvar preferência/fato sobre o usuário → use save_memory
+- Salvar contexto operacional (algo em andamento) → use save_operational_context
+- Buscar nas memórias → use recall_memory
 
 CONFIRMAÇÕES INTELIGENTES:
-- Para ações REVERSÍVEIS (criar tarefa): execute diretamente e confirme o que fez.
-- Para ações que ENVOLVEM TERCEIROS (criar evento, enviar email): confirme ANTES de executar, descrevendo o que vai fazer.
-- Ao confirmar, seja breve: "Vou criar a reunião 'X' amanhã às 14h. Confirma?"
-- Se o usuário confirmar (sim, ok, pode, confirmo), execute a ação.
+- Para ações REVERSÍVEIS (criar tarefa, salvar memória): execute diretamente e confirme o que fez.
+- Para ações que ENVOLVEM TERCEIROS (criar evento, enviar email): confirme ANTES de executar.
 
-IMPORTANTE: Quando o usuário perguntar sobre e-mails ou agenda, use os DADOS REAIS fornecidos abaixo para responder diretamente. Você TEM os dados. NÃO diga que não tem acesso — responda com as informações concretas.
+GOVERNANÇA DE MEMÓRIA:
+- Salve automaticamente como MEMÓRIA LONGA (save_memory) quando o usuário:
+  • mencionar uma preferência ("prefiro reuniões de manhã")
+  • compartilhar fato pessoal ("meu cachorro se chama Oliver")
+  • indicar hábito ou rotina ("sempre corro às 6h")
+  • corrigir o Jarvis ("não, meu nome é Gilberto, não Roberto")
+- Salve como CONTEXTO OPERACIONAL (save_operational_context) quando:
+  • algo estiver em andamento ("o processo X está em fase de recurso")
+  • houver prazo ou follow-up ("preciso retornar ao cliente Y até sexta")
+  • estado temporário relevante ("estou trabalhando no contrato Z")
+- NÃO salve: informações triviais, perguntas genéricas, ou dados que já estão nos dados em tempo real.
+- Ao salvar, seja silencioso sobre o ato — não diga "salvei na memória" a menos que o usuário peça explicitamente.
 
-Capacidades:
-- Você é um assistente completo: agenda, e-mails, tarefas, arquivos, automações
-- Responda com clareza e formatação markdown quando útil (listas, negrito, código)
-- Se não souber algo, diga com honestidade e sugira alternativas
+IMPORTANTE: Quando o usuário perguntar sobre e-mails ou agenda, use os DADOS REAIS fornecidos abaixo para responder diretamente.
 
 Estilo de resposta:
 - Respostas curtas e objetivas para perguntas simples
 - Respostas detalhadas e estruturadas para questões complexas
-- Sempre termine oferecendo ajuda adicional quando pertinente
 - Quando executar uma ferramenta, informe o resultado de forma natural e concisa`;
+
 
 function buildSystemPrompt(profile?: {
   instructions?: string;
@@ -459,7 +581,7 @@ function buildSystemPrompt(profile?: {
   user_profession?: string;
   user_preferences?: Record<string, string>;
   memories?: string[];
-}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string): string {
+}, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string, operationalContext?: string[]): string {
   let prompt = BASE_SYSTEM_PROMPT;
 
   if (currentDateTime) {
@@ -498,8 +620,13 @@ function buildSystemPrompt(profile?: {
     prompt += `\n\nInformações sobre o usuário:\n${personalInfo.join("\n")}`;
   }
 
+  // ─── Layered Memory Injection ─────────────────────────────────
   if (profile.memories && profile.memories.length > 0) {
-    prompt += `\n\nMemórias sobre o usuário (use como contexto):\n${profile.memories.map((m) => `- ${m}`).join("\n")}`;
+    prompt += `\n\n🧠 MEMÓRIA LONGA (preferências e fatos permanentes sobre o usuário):\n${profile.memories.map((m) => `- ${m}`).join("\n")}`;
+  }
+
+  if (operationalContext && operationalContext.length > 0) {
+    prompt += `\n\n📌 CONTEXTO OPERACIONAL (coisas em andamento — use como referência):\n${operationalContext.map((c) => `- ${c}`).join("\n")}`;
   }
 
   return prompt;
@@ -531,6 +658,8 @@ serve(async (req) => {
     liveData.news = newsData;
     liveData.weather = weatherData;
 
+    let operationalContext: string[] = [];
+
     try {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       const token = authHeader?.replace("Bearer ", "");
@@ -538,7 +667,22 @@ serve(async (req) => {
         const { data: { user } } = await supabase.auth.getUser(token);
         if (user) {
           userId = user.id;
-          googleToken = await getValidGoogleToken(supabase, user.id);
+          
+          // Fetch Google token, and operational context in parallel
+          const [gToken, opCtxResult] = await Promise.all([
+            getValidGoogleToken(supabase, user.id),
+            supabase
+              .from("operational_context")
+              .select("key, value, category")
+              .eq("user_id", user.id)
+              .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+              .order("updated_at", { ascending: false })
+              .limit(20),
+          ]);
+
+          googleToken = gToken;
+          operationalContext = (opCtxResult.data || []).map((o: any) => `[${o.category}] ${o.key}: ${o.value}`);
+
           if (googleToken) {
             const [calendarData, emailData] = await Promise.all([
               fetchCalendarEvents(googleToken),
@@ -566,7 +710,7 @@ serve(async (req) => {
       second: "2-digit",
     });
     const currentDateTime = formatter.format(now);
-    const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime);
+    const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime, operationalContext);
 
     const allMessages = [
       { role: "system", content: systemPrompt },
