@@ -11,6 +11,7 @@ import VoiceOrb from "@/components/VoiceOrb";
 import { toast } from "sonner";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { useMediaRecorderSTT } from "@/hooks/use-media-recorder-stt";
+import { useRealtimeSTT } from "@/hooks/use-realtime-stt";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeNumbersForTTS } from "@/lib/tts-normalize";
@@ -207,7 +208,7 @@ async function fetchTTSAudioUrl(text: string, voiceSettings?: any): Promise<stri
 
 // ─── Aggressive sentence splitter for low-latency TTS ───────────────
 // Splits on . ! ? newline, AND on , ; : — when chunk exceeds MAX_CHUNK_CHARS
-const MAX_CHUNK_CHARS = 150;
+const MAX_CHUNK_CHARS = 120;
 
 function extractSentences(buffer: string): { sentences: string[]; remainder: string } {
   const sentences: string[] = [];
@@ -344,10 +345,37 @@ const Chat = () => {
     },
   });
 
-  const useNativeSTT = stt.isSupported;
-  const voiceIsListening = useNativeSTT ? stt.isListening : mediaSTT.isListening;
-  const voiceIsSupported = useNativeSTT ? stt.isSupported : mediaSTT.isSupported;
-  const voiceIsTranscribing = !useNativeSTT && mediaSTT.isTranscribing;
+  // Realtime STT via ElevenLabs Scribe v2 WebSocket
+  const realtimeSTT = useRealtimeSTT({
+    language: "pt",
+    onPartial: (text) => {
+      voiceTranscriptRef.current = text;
+      setInput(text);
+    },
+    onCommit: (text) => {
+      voiceTranscriptRef.current = text;
+      setInput(text);
+      // Auto-send on VAD commit
+      if (shouldAutoSendRef.current) {
+        setTimeout(() => {
+          shouldAutoSendRef.current = false;
+          const btn = document.getElementById("jarvis-send-btn");
+          btn?.click();
+        }, 100);
+      }
+    },
+    onEnd: () => {
+      shouldAutoSendRef.current = false;
+    },
+  });
+
+  // Priority: realtimeSTT > nativeSTT > mediaSTT
+  const useRealtimeMode = realtimeSTT.isSupported;
+  const useNativeSTT = !useRealtimeMode && stt.isSupported;
+  const voiceIsListening = useRealtimeMode ? realtimeSTT.isListening : useNativeSTT ? stt.isListening : mediaSTT.isListening;
+  const voiceIsSupported = useRealtimeMode ? realtimeSTT.isSupported : useNativeSTT ? stt.isSupported : mediaSTT.isSupported;
+  const voiceIsTranscribing = !useRealtimeMode && !useNativeSTT && mediaSTT.isTranscribing;
+  const voiceIsConnecting = useRealtimeMode && realtimeSTT.isConnecting;
 
   // ─── Stop all TTS (barge-in) ─────────────────────────────────────
   const stopAllTTS = useCallback(() => {
@@ -372,6 +400,7 @@ const Chat = () => {
 
     let prefetchedUrl: string | null = null;
     let prefetchPromise: Promise<string | null> | null = null;
+    let prefetch2Promise: Promise<string | null> | null = null;
 
     while (ttsQueueRef.current.length > 0) {
       if (ttsAbortRef.current) break;
@@ -386,16 +415,25 @@ const Chat = () => {
       } else if (prefetchPromise) {
         audioUrl = await prefetchPromise;
         prefetchPromise = null;
+        // Promote prefetch2 to primary
+        if (prefetch2Promise) {
+          prefetchPromise = prefetch2Promise;
+          prefetch2Promise = null;
+        }
       } else {
         audioUrl = await fetchTTSAudioUrl(chunk, voiceSettings);
       }
 
       if (ttsAbortRef.current) break;
 
-      // Start prefetching next chunk (lookahead)
-      if (ttsQueueRef.current.length > 0) {
+      // Start prefetching next 2 chunks (lookahead=2 for iPhone gap reduction)
+      if (ttsQueueRef.current.length > 0 && !prefetchPromise) {
         const nextChunk = ttsQueueRef.current[0];
         prefetchPromise = fetchTTSAudioUrl(nextChunk, voiceSettings);
+      }
+      // Prefetch chunk after next into a secondary slot
+      if (ttsQueueRef.current.length > 1 && !prefetch2Promise) {
+        prefetch2Promise = fetchTTSAudioUrl(ttsQueueRef.current[1], voiceSettings);
       }
 
       if (audioUrl) {
@@ -832,7 +870,9 @@ const Chat = () => {
     if (voiceIsListening) {
       // Stop listening
       shouldAutoSendRef.current = true;
-      if (useNativeSTT) stt.stop(); else mediaSTT.stop();
+      if (useRealtimeMode) realtimeSTT.stop();
+      else if (useNativeSTT) stt.stop();
+      else mediaSTT.stop();
     } else {
       // Barge-in: immediately stop Jarvis speaking
       if (isSpeaking || ttsPlayingRef.current) {
@@ -840,7 +880,9 @@ const Chat = () => {
       }
       voiceTranscriptRef.current = "";
       shouldAutoSendRef.current = true;
-      if (useNativeSTT) stt.start(); else mediaSTT.start();
+      if (useRealtimeMode) realtimeSTT.start();
+      else if (useNativeSTT) stt.start();
+      else mediaSTT.start();
     }
   };
 
@@ -910,7 +952,7 @@ const Chat = () => {
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            {voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
+            {voiceIsConnecting ? "Conectando microfone..." : voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
         </div>
         <div className="flex items-center gap-2">
