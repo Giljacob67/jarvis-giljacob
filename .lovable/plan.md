@@ -1,90 +1,39 @@
 
 
-## Análise do Prompt JARVIS — O que falta
+## Plan: File Upload via Chat (Drag-and-Drop, Paste, and Attach Button)
 
-Comparei seu prompt com o que está implementado no projeto. Aqui está o diagnóstico:
+### What We'll Build
+Add the ability to attach files directly in the chat input area via:
+1. **Drag & drop** files onto the chat area
+2. **Paste** files from clipboard (Ctrl+V / Cmd+V)
+3. **Attach button** (paperclip icon) next to the text input
 
----
+Files will be uploaded to the existing `documents` storage bucket, processed via the `process-document` edge function, and a user message will be sent to Jarvis referencing the file so he can use RAG search on it.
 
-### Já Implementado (pode remover ou marcar como "done" no prompt)
+### Technical Approach
 
-| Item do Prompt | Status |
-|---|---|
-| Voice pipeline (STT → LLM → TTS streaming) | ✅ Implementado |
-| Barge-in (interrupção) | ✅ Implementado |
-| Orchestrator (intent → tool → response) | ✅ Implementado |
-| Tool calling (tasks, calendar, memory) | ✅ Implementado |
-| Memory system (short/long/operational) | ✅ Implementado |
-| Skills registry (Agenda, Tasks, Email, Legal, Planner) | ✅ Implementado |
-| Proactive mode + focus mode | ✅ Implementado |
-| Smart confirmations | ✅ Implementado |
-| Dashboard with greeting, priorities, alerts | ✅ Implementado |
-| Legal skills (analyze, draft, compare) | ✅ Implementado |
+**1. Chat UI Changes (`src/pages/Chat.tsx`)**
+- Add state for attached files (`pendingFiles: File[]`)
+- Add a hidden `<input type="file">` triggered by a paperclip button
+- Add `onDragOver`/`onDrop` handlers on the chat container for drag-and-drop with a visual overlay ("Solte o arquivo aqui")
+- Add `onPaste` handler on the text input to capture pasted files from clipboard
+- Show file preview chips below the input (filename + remove button)
+- On send: upload files to `documents` bucket, insert into `documents` table, call `process-document`, then send the message with file context (e.g., "📎 Arquivo enviado: filename.pdf")
 
----
+**2. Upload Logic**
+- Reuse the same upload pattern from `Files.tsx`: upload to `supabase.storage.from("documents")`, insert row into `documents` table, then invoke `process-document`
+- Extract this into a shared helper or inline it in Chat.tsx
+- Accept common file types: PDF, TXT, MD, JSON, images, DOCX
+- Max file size: 10MB per file
 
-### O que Falta no Prompt vs Implementação
+**3. Visual Elements**
+- Paperclip/attach icon (`Paperclip` from lucide) added to the input bar
+- Drag overlay: semi-transparent overlay with dashed border when dragging files over the chat
+- File chips: small rounded pills showing filename + X button to remove before sending
+- Upload progress indicator (spinner on the chip while uploading)
 
-#### 1. **Vector Memory (RAG) — Mencionado no prompt, NÃO implementado**
-O prompt fala em `document_chunks` com embeddings e `pgvector`, mas o projeto não tem:
-- Tabela `document_chunks` com coluna `embedding vector(1536)`
-- Extensão `pgvector` habilitada
-- Busca por similaridade semântica
-- Nenhum upload/processamento de documentos
+**4. No database changes needed** — the `documents` table and `documents` storage bucket already exist.
 
-**Plano**: Criar tabela `documents` + `document_chunks` com pgvector, edge function para processar uploads (extrair texto, chunkar, gerar embeddings), e tool `search_documents(query)` no chat.
-
-#### 2. **Tabela `tool_logs` (Auditoria) — Mencionado, NÃO implementado**
-O prompt pede "Jarvis fez X às 14:32" mas não há logging das tool executions. O `activity_logs` existe mas não é usado pelo chat.
-
-**Plano**: Após cada `executeTool`, inserir log em `activity_logs` com `action_type: "tool"`, metadata com tool name e args.
-
-#### 3. **File Storage / Document Upload — Mencionado, NÃO implementado**
-O prompt fala em `documents` table e `summarize_document(file)`, mas não existe:
-- Storage bucket para PDFs/DOCs
-- Upload UI
-- Processamento de documentos
-
-**Plano**: Criar bucket `documents`, UI de upload na página Files, edge function para extrair texto e gerar chunks.
-
-#### 4. **Tabela `preferences` separada — Mencionado, mas está no `jarvis_profiles`**
-O prompt sugere tabela `preferences`, mas isso já é coberto por `jarvis_profiles.user_preferences` (JSONB). Não precisa de tabela separada — o prompt pode ser atualizado.
-
-#### 5. **E-mail: envio (draft/send) — Mencionado, NÃO implementado**
-O prompt fala "Email Assistant" com envio, mas o chat só lê e-mails. Não há tool `send_email` ou `draft_email`.
-
-**Plano**: Adicionar tools `draft_email` e `send_email` com confirmação obrigatória.
-
-#### 6. **Latência <1s — Parcialmente**
-O pipeline atual faz 2 chamadas LLM (1 non-streaming para tools + 1 streaming para resposta). Isso adiciona latência. Para mensagens sem tools, ainda re-faz a chamada em streaming (double call).
-
-**Otimização possível**: Se a resposta inicial não tem tool_calls E tem content, usar esse content diretamente em vez de re-chamar.
-
----
-
-### Problemas no Próprio Prompt
-
-1. **Stack desatualizada**: O prompt menciona "React / Next.js / React Native (Expo)" e "Cloudflare Workers / Vercel Functions". O projeto real usa **React + Vite + Supabase Edge Functions**. O prompt deve refletir a stack real.
-
-2. **Project structure `/jarvis/apps/web`** — não se aplica. O projeto é monorepo simples com `src/` e `supabase/`.
-
-3. **"Generate deliverables"** — essa seção é para geração inicial. Como o projeto já existe, essa parte do prompt é irrelevante.
-
-4. **Tabela `users`** — não existe e não precisa. Usa `auth.users` + `profiles`.
-
-5. **Falta menção ao ElevenLabs STT** — O prompt só fala TTS. O projeto também usa ElevenLabs Scribe v2 para STT (fallback mobile).
-
----
-
-### Plano de Implementação Sugerido (o que falta de real)
-
-| Prioridade | Item | Esforço |
-|---|---|---|
-| 1 | Auditoria de tools (log em activity_logs) | Pequeno |
-| 2 | Tool `send_email` / `draft_email` com confirmação | Médio |
-| 3 | Otimizar double-call LLM (evitar re-chamada quando não há tools) | Pequeno |
-| 4 | Storage bucket + upload de documentos | Médio |
-| 5 | pgvector + RAG (busca semântica em documentos) | Grande |
-
-Quer que eu implemente esses itens? Posso começar pelos mais simples (auditoria + otimização LLM) ou ir direto para o RAG com documentos.
+### Files to Modify
+- `src/pages/Chat.tsx` — main changes (drag/drop, paste, attach button, upload logic, file chips)
 
