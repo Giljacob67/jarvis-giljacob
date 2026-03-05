@@ -1,39 +1,48 @@
 
 
-## Plan: File Upload via Chat (Drag-and-Drop, Paste, and Attach Button)
+## Plano: Modo Dinâmico do Jarvis (Pessoal/Profissional via Chat)
 
-### What We'll Build
-Add the ability to attach files directly in the chat input area via:
-1. **Drag & drop** files onto the chat area
-2. **Paste** files from clipboard (Ctrl+V / Cmd+V)
-3. **Attach button** (paperclip icon) next to the text input
+### Resumo
+Eliminar a necessidade de trocar perfis manualmente nas configurações. O Jarvis passará a suportar troca de modo via comandos naturais no chat, mantendo um estado de sessão no frontend que é enviado ao backend junto com **ambos** os perfis.
 
-Files will be uploaded to the existing `documents` storage bucket, processed via the `process-document` edge function, and a user message will be sent to Jarvis referencing the file so he can use RAG search on it.
+### O que muda
 
-### Technical Approach
+**1. Frontend (`src/pages/Chat.tsx`)**
+- Adicionar estado `jarvisMode` (`"personal"` | `"professional"`, padrão: `"personal"`)
+- Carregar **ambos** os perfis do banco (não só o ativo) no `useEffect` de load profile
+- Enviar para o backend: `{ messages, profile: activeProfileData, jarvisMode }` onde `activeProfileData` contém os dados de **ambos** os perfis
+- Detectar no retorno do assistente se houve troca de modo (o backend instrui o modelo a usar um marcador como `[MODE:professional]` ou `[MODE:personal]` no início da resposta) e atualizar `jarvisMode` no estado local
+- Exibir indicador visual discreto do modo atual (badge no header do chat)
 
-**1. Chat UI Changes (`src/pages/Chat.tsx`)**
-- Add state for attached files (`pendingFiles: File[]`)
-- Add a hidden `<input type="file">` triggered by a paperclip button
-- Add `onDragOver`/`onDrop` handlers on the chat container for drag-and-drop with a visual overlay ("Solte o arquivo aqui")
-- Add `onPaste` handler on the text input to capture pasted files from clipboard
-- Show file preview chips below the input (filename + remove button)
-- On send: upload files to `documents` bucket, insert into `documents` table, call `process-document`, then send the message with file context (e.g., "📎 Arquivo enviado: filename.pdf")
+**2. Backend (`supabase/functions/chat/index.ts`)**
+- Receber `jarvisMode` do frontend
+- Modificar `buildSystemPrompt` para aceitar ambos os perfis e o modo ativo
+- Unificar o system prompt em um único prompt que contém:
+  - Regras gerais do Jarvis (já existentes)
+  - Seção `MODO PESSOAL` com instruções do perfil pessoal
+  - Seção `MODO PROFISSIONAL` com instruções do perfil profissional
+  - Instrução: `"Seu modo atual é: ${jarvisMode}. Aplique APENAS o comportamento deste modo."`
+  - Instrução de detecção: quando o usuário pedir mudança de modo, confirmar brevemente e prefixar a resposta com `[MODE:xxx]`
+  - Instrução de sugestão automática: se detectar assunto claramente do outro modo, sugerir a troca
 
-**2. Upload Logic**
-- Reuse the same upload pattern from `Files.tsx`: upload to `supabase.storage.from("documents")`, insert row into `documents` table, then invoke `process-document`
-- Extract this into a shared helper or inline it in Chat.tsx
-- Accept common file types: PDF, TXT, MD, JSON, images, DOCX
-- Max file size: 10MB per file
+**3. Sem mudanças no banco de dados**
+- O `jarvisMode` vive apenas no estado da sessão (React state)
+- Os perfis continuam salvos separadamente em `jarvis_profiles`
+- A toggle de "ativo" nas configurações pode continuar existindo mas deixa de ser o fator determinante no chat
 
-**3. Visual Elements**
-- Paperclip/attach icon (`Paperclip` from lucide) added to the input bar
-- Drag overlay: semi-transparent overlay with dashed border when dragging files over the chat
-- File chips: small rounded pills showing filename + X button to remove before sending
-- Upload progress indicator (spinner on the chip while uploading)
+### Fluxo de Uso
 
-**4. No database changes needed** — the `documents` table and `documents` storage bucket already exist.
+```text
+Usuário: "Jarvis, modo profissional"
+→ Backend detecta via prompt, modelo responde: "[MODE:professional] Certo. Modo profissional ativado."
+→ Frontend parseia [MODE:professional], atualiza jarvisMode, remove o marcador da mensagem exibida
+→ Próximas mensagens usam comportamento profissional
 
-### Files to Modify
-- `src/pages/Chat.tsx` — main changes (drag/drop, paste, attach button, upload logic, file chips)
+Usuário: "Analise essa decisão judicial"  (em modo pessoal)
+→ Jarvis sugere: "Parece um assunto profissional. Deseja que eu ative o modo profissional?"
+```
+
+### Arquivos Modificados
+- `src/pages/Chat.tsx` — estado `jarvisMode`, carregar ambos perfis, badge visual, parsing de `[MODE:xxx]`
+- `supabase/functions/chat/index.ts` — `buildSystemPrompt` unificado, receber `jarvisMode` no request body
 
