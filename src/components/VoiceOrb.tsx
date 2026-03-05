@@ -5,11 +5,10 @@ interface VoiceOrbProps {
   isTranscribing: boolean;
   isSpeaking: boolean;
   disabled: boolean;
-  onPointerDown: () => void;
-  onPointerUp: () => void;
+  onClick: () => void;
 }
 
-const VoiceOrb = ({ isListening, isTranscribing, isSpeaking, disabled, onPointerDown, onPointerUp }: VoiceOrbProps) => {
+const VoiceOrb = ({ isListening, isTranscribing, isSpeaking, disabled, onClick }: VoiceOrbProps) => {
   const size = 100;
 
   return (
@@ -63,13 +62,11 @@ const VoiceOrb = ({ isListening, isTranscribing, isSpeaking, disabled, onPointer
             repeat: Infinity,
             ease: "easeInOut",
           }}
-          onPointerDown={disabled ? undefined : onPointerDown}
-          onPointerUp={disabled ? undefined : onPointerUp}
-          onPointerLeave={isListening ? onPointerUp : undefined}
+          onClick={disabled ? undefined : onClick}
           disabled={disabled}
         >
           <span className="font-display text-primary-foreground font-bold text-lg select-none">
-            {isTranscribing ? "..." : isListening ? "●" : "J"}
+            {isTranscribing ? "..." : isListening ? "■" : "J"}
           </span>
         </motion.button>
       </div>
@@ -78,8 +75,8 @@ const VoiceOrb = ({ isListening, isTranscribing, isSpeaking, disabled, onPointer
         {isTranscribing
           ? "Transcrevendo..."
           : isListening
-          ? "Solte para enviar"
-          : "Segure para falar"}
+          ? "Toque para parar"
+          : "Toque para falar"}
       </p>
     </div>
   );
