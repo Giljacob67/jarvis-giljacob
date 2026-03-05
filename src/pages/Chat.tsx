@@ -63,7 +63,7 @@ async function streamChat({
       apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({ messages, profile, jarvisMode: (profile as any)?._jarvisMode }),
+    body: JSON.stringify({ messages, profile, jarvisMode: (profile as any)?._jarvisMode, userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   });
 
   if (!resp.ok) {

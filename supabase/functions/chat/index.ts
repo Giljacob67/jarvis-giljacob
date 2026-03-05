@@ -55,7 +55,7 @@ function getHeader(headers: any[], name: string): string {
 }
 
 // ─── Data Fetchers ──────────────────────────────────────────────────
-async function fetchCalendarEvents(accessToken: string): Promise<string> {
+async function fetchCalendarEvents(accessToken: string, tz: string = "America/Sao_Paulo"): Promise<string> {
   try {
     const now = new Date();
     const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -77,15 +77,15 @@ async function fetchCalendarEvents(accessToken: string): Promise<string> {
       return "Nenhum evento encontrado nos próximos 7 dias.";
     }
 
-    const todayStr = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short" }).format(now);
+    const todayStr = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, dateStyle: "short" }).format(now);
 
     const lines = data.items.map((e: any) => {
       const startRaw = e.start?.dateTime || e.start?.date || "";
       const endRaw = e.end?.dateTime || e.end?.date || "";
       const startDate = new Date(startRaw);
-      const eventDateStr = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short" }).format(startDate);
+      const eventDateStr = new Intl.DateTimeFormat("pt-BR", { timeZone: tz, dateStyle: "short" }).format(startDate);
       const isToday = eventDateStr === todayStr;
-      const dayLabel = isToday ? "[HOJE]" : `[${new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "numeric", month: "short" }).format(startDate)}]`;
+      const dayLabel = isToday ? "[HOJE]" : `[${new Intl.DateTimeFormat("pt-BR", { timeZone: tz, weekday: "long", day: "numeric", month: "short" }).format(startDate)}]`;
       const location = e.location ? ` | Local: ${e.location}` : "";
       const desc = e.description ? ` | Descrição: ${e.description.slice(0, 100)}` : "";
       return `- ${dayLabel} ${e.summary || "Sem título"} | Início: ${startRaw} | Fim: ${endRaw}${location}${desc}`;
@@ -515,6 +515,7 @@ async function executeTool(
   args: any,
   userId: string,
   googleToken: string | null,
+  tz: string = "America/Sao_Paulo",
 ): Promise<string> {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -618,8 +619,8 @@ async function executeTool(
       const { summary, start_datetime, end_datetime, description, location } = args;
       const event: any = {
         summary,
-        start: { dateTime: start_datetime, timeZone: "America/Sao_Paulo" },
-        end: { dateTime: end_datetime, timeZone: "America/Sao_Paulo" },
+        start: { dateTime: start_datetime, timeZone: tz },
+        end: { dateTime: end_datetime, timeZone: tz },
       };
       if (description) event.description = description;
       if (location) event.location = location;
@@ -1071,7 +1072,8 @@ serve(async (req) => {
   }
 
   try {
-    const { messages, profile, jarvisMode } = await req.json();
+    const { messages, profile, jarvisMode, userTimezone: rawTz } = await req.json();
+    const userTimezone = rawTz || "America/Sao_Paulo";
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
@@ -1114,7 +1116,7 @@ serve(async (req) => {
 
           if (googleToken) {
             const [calendarData, emailData] = await Promise.all([
-              fetchCalendarEvents(googleToken),
+              fetchCalendarEvents(googleToken, userTimezone),
               fetchRecentEmails(googleToken),
             ]);
             liveData.calendar = calendarData;
@@ -1128,7 +1130,7 @@ serve(async (req) => {
 
     const now = new Date();
     const formatter = new Intl.DateTimeFormat("pt-BR", {
-      timeZone: "America/Sao_Paulo",
+      timeZone: userTimezone,
       weekday: "long", year: "numeric", month: "long", day: "numeric",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
@@ -1214,7 +1216,7 @@ serve(async (req) => {
           : tc.function.arguments;
 
         console.log(`Executing tool: ${tc.function.name}`, args);
-        const result = await executeTool(tc.function.name, args, userId!, googleToken);
+        const result = await executeTool(tc.function.name, args, userId!, googleToken, userTimezone);
 
         // Audit logging (fire-and-forget)
         logToolExecution(supabase, userId!, tc.function.name, args, result);
