@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus } from "lucide-react";
+import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus, Paperclip, X, FileText } from "lucide-react";
 import NotificationBell from "@/components/NotificationBell";
 import FocusModeToggle from "@/components/FocusModeToggle";
 import ReactMarkdown from "react-markdown";
@@ -265,6 +265,19 @@ function splitLongChunk(text: string, out: string[]) {
   if (last === 0) out.push(text);
 }
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const ACCEPTED_TYPES = [
+  "application/pdf", "text/plain", "text/markdown", "text/csv",
+  "application/json", "image/png", "image/jpeg", "image/webp",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+];
+
+type PendingFile = {
+  file: File;
+  id: string;
+  uploading: boolean;
+};
+
 const Chat = () => {
   const { user } = useAuth();
   const isMobile = useIsMobile();
@@ -279,6 +292,10 @@ const Chat = () => {
   const voiceTranscriptRef = useRef("");
   const shouldAutoSendRef = useRef(false);
   const [activeProfile, setActiveProfile] = useState<any>(null);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
 
   // ─── Barge-in & TTS chunk queue refs ─────────────────────────────
   const ttsAbortRef = useRef(false);
@@ -528,25 +545,141 @@ const Chat = () => {
     await supabase.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
   };
 
+  // ─── File upload helpers ─────────────────────────────────────────
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const newFiles: PendingFile[] = [];
+    for (const file of Array.from(files)) {
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`Arquivo "${file.name}" excede 10MB`);
+        continue;
+      }
+      if (!ACCEPTED_TYPES.includes(file.type) && !file.name.match(/\.(md|txt|json|csv)$/i)) {
+        toast.error(`Tipo não suportado: ${file.name}`);
+        continue;
+      }
+      newFiles.push({ file, id: `${Date.now()}-${Math.random()}`, uploading: false });
+    }
+    setPendingFiles((prev) => [...prev, ...newFiles]);
+  }, []);
+
+  const removeFile = useCallback((id: string) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+  }, [addFiles]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const files = e.clipboardData.files;
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  }, [addFiles]);
+
+  const uploadFile = async (pendingFile: PendingFile): Promise<string | null> => {
+    if (!user) return null;
+    const { file } = pendingFile;
+    const filePath = `${user.id}/${Date.now()}-${file.name}`;
+
+    const { error: storageError } = await supabase.storage
+      .from("documents")
+      .upload(filePath, file, { contentType: file.type });
+
+    if (storageError) {
+      toast.error(`Erro ao enviar ${file.name}`);
+      return null;
+    }
+
+    const { data: docData, error: docError } = await supabase
+      .from("documents")
+      .insert({
+        user_id: user.id,
+        name: file.name,
+        file_path: filePath,
+        mime_type: file.type || "application/octet-stream",
+        size_bytes: file.size,
+        status: "processing",
+      })
+      .select("id")
+      .single();
+
+    if (docError || !docData) {
+      toast.error(`Erro ao registrar ${file.name}`);
+      return null;
+    }
+
+    // Process document (embeddings) in background
+    const { data: { session } } = await supabase.auth.getSession();
+    supabase.functions.invoke("process-document", {
+      body: { document_id: docData.id },
+      headers: { Authorization: `Bearer ${session?.access_token}` },
+    }).catch(console.error);
+
+    return file.name;
+  };
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || isLoading) return;
+    const hasFiles = pendingFiles.length > 0;
+    if ((!text && !hasFiles) || isLoading) return;
 
     // Reset abort flag for new response
     ttsAbortRef.current = false;
     ttsQueueRef.current = [];
 
+    // Upload pending files first
+    let fileContext = "";
+    if (hasFiles) {
+      setPendingFiles((prev) => prev.map((f) => ({ ...f, uploading: true })));
+      const uploadedNames: string[] = [];
+      for (const pf of pendingFiles) {
+        const name = await uploadFile(pf);
+        if (name) uploadedNames.push(name);
+      }
+      setPendingFiles([]);
+      if (uploadedNames.length > 0) {
+        fileContext = uploadedNames.map((n) => `📎 Arquivo enviado: ${n}`).join("\n");
+      }
+    }
+
+    const fullContent = [fileContext, text].filter(Boolean).join("\n");
+
     const userMsg: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: text,
+      content: fullContent,
       timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsLoading(true);
-    persistMessage("user", text);
+    persistMessage("user", fullContent);
 
     const history = [...messages, userMsg].map((m) => ({
       role: m.role,
@@ -638,7 +771,7 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile, enqueueTTSChunk]);
+  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile, enqueueTTSChunk, pendingFiles]);
 
   const exportChat = () => {
     const text = messages
@@ -672,7 +805,44 @@ const Chat = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen">
+    <div
+      className="flex flex-col h-screen relative"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay */}
+      <AnimatePresence>
+        {isDragging && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-primary/50 rounded-xl"
+          >
+            <div className="text-center">
+              <FileText className="h-12 w-12 text-primary mx-auto mb-3" />
+              <p className="text-lg font-heading text-foreground">Solte o arquivo aqui</p>
+              <p className="text-sm text-muted-foreground">PDF, TXT, MD, JSON, imagens, DOCX</p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        accept=".pdf,.txt,.md,.json,.csv,.png,.jpg,.jpeg,.webp,.docx"
+        onChange={(e) => {
+          if (e.target.files) addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+
       {/* Header */}
       <div className="p-4 border-b border-border/50 flex items-center gap-4">
         <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={voiceIsListening} />
@@ -778,12 +948,45 @@ const Chat = () => {
           </button>
         </div>
 
+        {/* File chips */}
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {pendingFiles.map((pf) => (
+              <div
+                key={pf.id}
+                className="flex items-center gap-1.5 bg-secondary/80 text-secondary-foreground rounded-lg px-3 py-1.5 text-xs font-body"
+              >
+                {pf.uploading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <FileText className="h-3 w-3" />
+                )}
+                <span className="max-w-[120px] truncate">{pf.file.name}</span>
+                {!pf.uploading && (
+                  <button onClick={() => removeFile(pf.id)} className="ml-0.5 hover:text-destructive transition-colors">
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Text Input */}
         <div className="glass-panel flex items-center gap-3 p-3">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2 rounded-lg hover:bg-secondary/60 text-muted-foreground hover:text-foreground transition-all"
+            title="Anexar arquivo"
+            disabled={isLoading}
+          >
+            <Paperclip size={18} />
+          </button>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+            onPaste={handlePaste}
             placeholder="Fale com Jarvis..."
             className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm font-body outline-none"
             disabled={isLoading}
@@ -791,7 +994,7 @@ const Chat = () => {
           <button
             id="jarvis-send-btn"
             onClick={sendMessage}
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && pendingFiles.length === 0) || isLoading}
             className="p-2.5 rounded-xl bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/80 transition-all"
           >
             <Send size={18} />
