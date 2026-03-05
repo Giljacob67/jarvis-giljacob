@@ -586,20 +586,21 @@ const Chat = () => {
     toast.success("Chat exportado!");
   };
 
-  // ─── Barge-in: stop TTS before starting to listen ──────────────
-  const handleOrbDown = () => {
-    // Barge-in: immediately stop Jarvis speaking
-    if (isSpeaking || ttsPlayingRef.current) {
-      stopAllTTS();
+  // ─── Toggle voice: tap to start, tap again or silence to stop ──
+  const handleOrbToggle = () => {
+    if (voiceIsListening) {
+      // Stop listening
+      shouldAutoSendRef.current = true;
+      if (useNativeSTT) stt.stop(); else mediaSTT.stop();
+    } else {
+      // Barge-in: immediately stop Jarvis speaking
+      if (isSpeaking || ttsPlayingRef.current) {
+        stopAllTTS();
+      }
+      voiceTranscriptRef.current = "";
+      shouldAutoSendRef.current = true;
+      if (useNativeSTT) stt.start(); else mediaSTT.start();
     }
-    voiceTranscriptRef.current = "";
-    shouldAutoSendRef.current = true;
-    if (useNativeSTT) stt.start(); else mediaSTT.start();
-  };
-
-  const handleOrbUp = () => {
-    shouldAutoSendRef.current = true;
-    if (useNativeSTT) stt.stop(); else mediaSTT.stop();
   };
 
   return (
@@ -697,8 +698,7 @@ const Chat = () => {
             isTranscribing={voiceIsTranscribing}
             isSpeaking={isSpeaking}
             disabled={!voiceIsSupported || voiceIsTranscribing || isLoading}
-            onPointerDown={handleOrbDown}
-            onPointerUp={handleOrbUp}
+            onClick={handleOrbToggle}
           />
 
           <button
