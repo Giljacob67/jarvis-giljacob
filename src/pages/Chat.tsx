@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Loader2, Volume2, VolumeX, Newspaper, Download } from "lucide-react";
+import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import VoiceOrb from "@/components/VoiceOrb";
@@ -27,18 +27,26 @@ type Message = {
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
 const TTS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/elevenlabs-tts`;
 
+type ToolCallMeta = {
+  tool: string;
+  args: any;
+  result: { success: boolean; message?: string; [key: string]: any } | null;
+};
+
 async function streamChat({
   messages,
   profile,
   onDelta,
   onDone,
   onError,
+  onToolCalls,
 }: {
   messages: { role: string; content: string }[];
   profile?: any;
   onDelta: (text: string) => void;
   onDone: () => void;
   onError: (msg: string) => void;
+  onToolCalls?: (calls: ToolCallMeta[]) => void;
 }) {
   const { data: { session } } = await supabase.auth.getSession();
   const authToken = session?.access_token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -85,6 +93,11 @@ async function streamChat({
       if (jsonStr === "[DONE]") { done = true; break; }
       try {
         const parsed = JSON.parse(jsonStr);
+        // Check for tool_calls metadata event
+        if (parsed.tool_calls && onToolCalls) {
+          onToolCalls(parsed.tool_calls);
+          continue;
+        }
         const content = parsed.choices?.[0]?.delta?.content;
         if (content) onDelta(content);
       } catch {
@@ -504,6 +517,23 @@ const Chat = () => {
         messages: history,
         profile: activeProfile || undefined,
         onDelta: upsertAssistant,
+        onToolCalls: (calls) => {
+          for (const tc of calls) {
+            if (tc.result?.success) {
+              const toolLabels: Record<string, string> = {
+                create_task: "✅ Tarefa criada",
+                complete_task: "✅ Tarefa concluída",
+                list_tasks: "📋 Tarefas listadas",
+                create_calendar_event: "📅 Evento criado",
+              };
+              toast.success(toolLabels[tc.tool] || "Ação executada", {
+                description: tc.result.message,
+              });
+            } else if (tc.result && !tc.result.success && !tc.result.ambiguous) {
+              toast.error("Erro na ação", { description: tc.result.message });
+            }
+          }
+        },
         onDone: async () => {
           setIsLoading(false);
           if (assistantContent) {
