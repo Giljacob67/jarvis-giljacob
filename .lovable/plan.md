@@ -1,78 +1,90 @@
 
 
-## Status e Proximos Passos
+## Análise do Prompt JARVIS — O que falta
 
-### Fase 1 -- Concluida
-
-Barge-in e TTS por chunks semanticos ja estao implementados em `Chat.tsx` e `elevenlabs-tts/index.ts`. O Jarvis agora fala enquanto pensa e pode ser interrompido.
-
-### Proxima: Fase 2 -- Tarefas + Painel "Hoje"
-
-Seguindo o roadmap aprovado, a Fase 2 traz uso diario real ao Jarvis.
+Comparei seu prompt com o que está implementado no projeto. Aqui está o diagnóstico:
 
 ---
 
-### 1. Tabela `tasks` no banco
+### Já Implementado (pode remover ou marcar como "done" no prompt)
 
-```sql
-CREATE TABLE public.tasks (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  title text NOT NULL,
-  description text DEFAULT '',
-  priority integer NOT NULL DEFAULT 2 CHECK (priority BETWEEN 1 AND 3),
-  status text NOT NULL DEFAULT 'pending',
-  due_date date,
-  estimated_minutes integer,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  completed_at timestamptz
-);
-
-ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
--- RLS: users can CRUD own tasks
-```
-
-### 2. Pagina de Tarefas (`src/pages/Tasks.tsx`)
-
-- Filtros: Hoje / Semana / Atrasadas / Todas
-- Criar tarefa inline (titulo + prioridade + data)
-- Marcar como concluida com um toque
-- Indicador de prioridade (1=alta vermelha, 2=media amarela, 3=baixa verde)
-- Layout mobile-first
-
-### 3. Dashboard "Hoje" aprimorado (`src/pages/Dashboard.tsx`)
-
-- Card "Top 3 Prioridades" -- mostra as 3 tarefas mais urgentes do dia
-- Card "Tempo Disponivel" -- calcula horas livres com base na agenda
-- Saudacao contextual: "Boa tarde, Gilberto. Voce tem 2 reunioes e 1 tarefa atrasada."
-- Card de alertas: prazos proximos, tarefas atrasadas
-
-### 4. Sidebar atualizada
-
-- Adicionar link "Tarefas" no `AppSidebar.tsx` com icone CheckSquare
+| Item do Prompt | Status |
+|---|---|
+| Voice pipeline (STT → LLM → TTS streaming) | ✅ Implementado |
+| Barge-in (interrupção) | ✅ Implementado |
+| Orchestrator (intent → tool → response) | ✅ Implementado |
+| Tool calling (tasks, calendar, memory) | ✅ Implementado |
+| Memory system (short/long/operational) | ✅ Implementado |
+| Skills registry (Agenda, Tasks, Email, Legal, Planner) | ✅ Implementado |
+| Proactive mode + focus mode | ✅ Implementado |
+| Smart confirmations | ✅ Implementado |
+| Dashboard with greeting, priorities, alerts | ✅ Implementado |
+| Legal skills (analyze, draft, compare) | ✅ Implementado |
 
 ---
 
-### Sobre suas sugestoes de arquitetura avancada
+### O que Falta no Prompt vs Implementação
 
-Captei tudo. Os conceitos de multi-agentes, Planner, Tool Router, Skills, memoria vetorial e proatividade controlada estao registrados e serao incorporados nas fases seguintes:
+#### 1. **Vector Memory (RAG) — Mencionado no prompt, NÃO implementado**
+O prompt fala em `document_chunks` com embeddings e `pgvector`, mas o projeto não tem:
+- Tabela `document_chunks` com coluna `embedding vector(1536)`
+- Extensão `pgvector` habilitada
+- Busca por similaridade semântica
+- Nenhum upload/processamento de documentos
 
-- **Fase 3**: Tool calling no chat (Jarvis cria tarefas/eventos por voz) + confirmacoes inteligentes
-- **Fase 4**: Memoria inteligente com camadas (curta/longa/operacional) + RAG basico
-- **Fase 5**: Skills registry + Planner para tarefas complexas
-- **Fase 6**: Proatividade com cron + modo foco + notificacoes PWA
+**Plano**: Criar tabela `documents` + `document_chunks` com pgvector, edge function para processar uploads (extrair texto, chunkar, gerar embeddings), e tool `search_documents(query)` no chat.
 
-Esses conceitos nao mudam a Fase 2 -- eles entram quando o tool calling e a memoria estiverem prontos.
+#### 2. **Tabela `tool_logs` (Auditoria) — Mencionado, NÃO implementado**
+O prompt pede "Jarvis fez X às 14:32" mas não há logging das tool executions. O `activity_logs` existe mas não é usado pelo chat.
+
+**Plano**: Após cada `executeTool`, inserir log em `activity_logs` com `action_type: "tool"`, metadata com tool name e args.
+
+#### 3. **File Storage / Document Upload — Mencionado, NÃO implementado**
+O prompt fala em `documents` table e `summarize_document(file)`, mas não existe:
+- Storage bucket para PDFs/DOCs
+- Upload UI
+- Processamento de documentos
+
+**Plano**: Criar bucket `documents`, UI de upload na página Files, edge function para extrair texto e gerar chunks.
+
+#### 4. **Tabela `preferences` separada — Mencionado, mas está no `jarvis_profiles`**
+O prompt sugere tabela `preferences`, mas isso já é coberto por `jarvis_profiles.user_preferences` (JSONB). Não precisa de tabela separada — o prompt pode ser atualizado.
+
+#### 5. **E-mail: envio (draft/send) — Mencionado, NÃO implementado**
+O prompt fala "Email Assistant" com envio, mas o chat só lê e-mails. Não há tool `send_email` ou `draft_email`.
+
+**Plano**: Adicionar tools `draft_email` e `send_email` com confirmação obrigatória.
+
+#### 6. **Latência <1s — Parcialmente**
+O pipeline atual faz 2 chamadas LLM (1 non-streaming para tools + 1 streaming para resposta). Isso adiciona latência. Para mensagens sem tools, ainda re-faz a chamada em streaming (double call).
+
+**Otimização possível**: Se a resposta inicial não tem tool_calls E tem content, usar esse content diretamente em vez de re-chamar.
 
 ---
 
-### Resumo das mudancas da Fase 2
+### Problemas no Próprio Prompt
 
-| Arquivo | Mudanca |
-|---------|---------|
-| Migracao SQL | Tabela `tasks` com RLS |
-| `src/pages/Tasks.tsx` | Nova pagina de tarefas |
-| `src/pages/Dashboard.tsx` | Cards de prioridades, tempo disponivel, alertas |
-| `src/components/AppSidebar.tsx` | Link para Tarefas |
-| `src/App.tsx` | Rota `/tasks` |
+1. **Stack desatualizada**: O prompt menciona "React / Next.js / React Native (Expo)" e "Cloudflare Workers / Vercel Functions". O projeto real usa **React + Vite + Supabase Edge Functions**. O prompt deve refletir a stack real.
+
+2. **Project structure `/jarvis/apps/web`** — não se aplica. O projeto é monorepo simples com `src/` e `supabase/`.
+
+3. **"Generate deliverables"** — essa seção é para geração inicial. Como o projeto já existe, essa parte do prompt é irrelevante.
+
+4. **Tabela `users`** — não existe e não precisa. Usa `auth.users` + `profiles`.
+
+5. **Falta menção ao ElevenLabs STT** — O prompt só fala TTS. O projeto também usa ElevenLabs Scribe v2 para STT (fallback mobile).
+
+---
+
+### Plano de Implementação Sugerido (o que falta de real)
+
+| Prioridade | Item | Esforço |
+|---|---|---|
+| 1 | Auditoria de tools (log em activity_logs) | Pequeno |
+| 2 | Tool `send_email` / `draft_email` com confirmação | Médio |
+| 3 | Otimizar double-call LLM (evitar re-chamada quando não há tools) | Pequeno |
+| 4 | Storage bucket + upload de documentos | Médio |
+| 5 | pgvector + RAG (busca semântica em documentos) | Grande |
+
+Quer que eu implemente esses itens? Posso começar pelos mais simples (auditoria + otimização LLM) ou ir direto para o RAG com documentos.
 
