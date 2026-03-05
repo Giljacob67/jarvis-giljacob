@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Settings, User, Brain, Trash2, Plus, Save, ToggleLeft, ToggleRight, Volume2, Play } from "lucide-react";
+import { Settings, User, Brain, Trash2, Plus, Save, Volume2, Play } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
@@ -380,23 +380,9 @@ const SettingsPage = () => {
                   <span className="font-medium text-foreground">
                     {type === "personal" ? "🏠 Pessoal" : "💼 Profissional"}
                   </span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleActive(type);
-                    }}
-                    className="text-xs"
-                    title={profiles[type].is_active ? "Perfil ativo" : "Ativar perfil"}
-                  >
-                    {profiles[type].is_active ? (
-                      <ToggleRight size={22} className="text-primary" />
-                    ) : (
-                      <ToggleLeft size={22} className="text-muted-foreground" />
-                    )}
-                  </button>
                 </div>
                 <p className="text-[10px] text-muted-foreground">
-                  {profiles[type].is_active ? "Ativo" : "Inativo"}
+                  Troque no chat: "Jarvis, modo {type === "personal" ? "pessoal" : "profissional"}"
                 </p>
               </button>
             ))}
@@ -406,12 +392,15 @@ const SettingsPage = () => {
           <div className="glass-panel p-4 rounded-xl space-y-3">
             <h3 className="text-sm font-medium text-foreground">📝 Instruções de comportamento</h3>
             <p className="text-xs text-muted-foreground">
-              Defina como o Jarvis deve se comportar neste perfil (tom, regras, estilo de resposta)
+              Defina como o Jarvis deve se comportar neste perfil. No chat, ambos os perfis ficam disponíveis e você pode alternar com comandos como <span className="text-primary font-medium">"Jarvis, modo profissional"</span> ou <span className="text-primary font-medium">"modo pessoal"</span>.
             </p>
             <textarea
               value={profile.instructions}
               onChange={(e) => updateProfile(selectedProfile, "instructions", e.target.value)}
-              placeholder="Ex: Seja mais informal e use gírias. Priorize respostas curtas. Sempre sugira links relevantes..."
+              placeholder={selectedProfile === "personal"
+                ? "Ex: Seja mais informal e use gírias. Priorize respostas curtas. Sempre sugira links relevantes..."
+                : "Ex: Seja formal e técnico. Use linguagem jurídica. Priorize precisão e rigor nas análises..."
+              }
               className="w-full h-32 bg-background/50 border border-border/50 rounded-lg p-3 text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none focus:border-primary/40 transition-colors"
             />
           </div>
