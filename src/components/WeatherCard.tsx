@@ -1,5 +1,6 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cloud, Sun, CloudRain, CloudSnow, CloudLightning, CloudDrizzle, Loader2, CloudOff } from "lucide-react";
+import { Cloud, Sun, CloudRain, CloudSnow, CloudLightning, CloudDrizzle, Loader2, CloudOff, MapPin } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -15,8 +16,28 @@ const weatherIcons: Record<string, typeof Sun> = {
 
 const WeatherCard = () => {
   const { user } = useAuth();
+  const [geoCoords, setGeoCoords] = useState<{ lat: number; lon: number } | null>(null);
+  const [geoAttempted, setGeoAttempted] = useState(false);
 
-  // Load city from active profile
+  // Try geolocation on mount
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGeoAttempted(true);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGeoCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        setGeoAttempted(true);
+      },
+      () => {
+        setGeoAttempted(true);
+      },
+      { timeout: 5000, maximumAge: 10 * 60 * 1000 }
+    );
+  }, []);
+
+  // Load city from active profile as fallback
   const { data: profileCity } = useQuery({
     queryKey: ["weather-city", user?.id],
     queryFn: async () => {
@@ -29,23 +50,24 @@ const WeatherCard = () => {
       const prefs = data?.[0]?.user_preferences as Record<string, string> | null;
       return prefs?.city || "São Paulo";
     },
-    enabled: !!user,
+    enabled: !!user && geoAttempted && !geoCoords,
   });
 
-  const city = profileCity || "São Paulo";
+  const fallbackCity = profileCity || "São Paulo";
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["weather", city],
+    queryKey: ["weather", geoCoords?.lat, geoCoords?.lon, geoCoords ? null : fallbackCity],
     queryFn: async () => {
-      const { data, error } = await supabase.functions.invoke("weather-api", {
-        body: { city },
-      });
+      const body = geoCoords
+        ? { lat: geoCoords.lat, lon: geoCoords.lon }
+        : { city: fallbackCity };
+      const { data, error } = await supabase.functions.invoke("weather-api", { body });
       if (error) throw error;
       return data;
     },
     refetchInterval: 30 * 60 * 1000,
     retry: 1,
-    enabled: !!city,
+    enabled: geoAttempted && (!!geoCoords || !!fallbackCity),
   });
 
   const Icon = data?.condition ? (weatherIcons[data.condition] || Cloud) : Cloud;
@@ -76,7 +98,10 @@ const WeatherCard = () => {
           <div>
             <p className="text-3xl font-display font-bold text-foreground">{Math.round(data.temp)}°C</p>
             <p className="text-sm text-muted-foreground capitalize">{data.description}</p>
-            <p className="text-xs text-muted-foreground">{data.city}</p>
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              {geoCoords && <MapPin size={10} />}
+              {data.city}
+            </p>
           </div>
         </div>
       )}

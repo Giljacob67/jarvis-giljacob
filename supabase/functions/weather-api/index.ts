@@ -19,6 +19,7 @@ serve(async (req) => {
     let cityName = city || "São Paulo";
 
     if (city && !lat) {
+      // Geocode city name to coords
       const geoResp = await fetch(
         `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=pt`
       );
@@ -27,6 +28,21 @@ serve(async (req) => {
         latitude = geoData.results[0].latitude;
         longitude = geoData.results[0].longitude;
         cityName = geoData.results[0].name;
+      }
+    } else if (lat && lon && !city) {
+      // Reverse geocode coords to city name
+      const geoResp = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=&count=1&language=pt`
+      );
+      // Open-Meteo doesn't support reverse geocoding, use nominatim instead
+      try {
+        const revResp = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=pt`
+        );
+        const revData = await revResp.json();
+        cityName = revData.address?.city || revData.address?.town || revData.address?.municipality || revData.address?.state || "Localização atual";
+      } catch {
+        cityName = "Localização atual";
       }
     }
 
