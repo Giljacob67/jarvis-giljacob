@@ -131,6 +131,31 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+// Shared Audio element for iOS Safari compatibility
+let sharedAudio: HTMLAudioElement | null = null;
+
+function unlockAudio() {
+  if (sharedAudio) return;
+  sharedAudio = new Audio();
+  // Play a silent data URI to unlock audio on iOS
+  sharedAudio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+  sharedAudio.play().then(() => {
+    sharedAudio!.pause();
+    sharedAudio!.currentTime = 0;
+  }).catch(() => {});
+}
+
+// Unlock audio on first user interaction (required by Safari autoplay policy)
+if (typeof window !== "undefined") {
+  const unlock = () => {
+    unlockAudio();
+    window.removeEventListener("touchstart", unlock, true);
+    window.removeEventListener("click", unlock, true);
+  };
+  window.addEventListener("touchstart", unlock, true);
+  window.addEventListener("click", unlock, true);
+}
+
 async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boolean> {
   try {
     const cleanText = stripMarkdown(text);
@@ -158,12 +183,21 @@ async function playElevenLabsTTS(text: string, voiceSettings?: any): Promise<boo
 
     const audioBlob = await response.blob();
     const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
+    
+    // Reuse unlocked audio element for iOS, or create new one
+    const audio = sharedAudio || new Audio();
+    audio.src = audioUrl;
     
     return new Promise((resolve) => {
       audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(true); };
       audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(false); };
-      audio.play().catch(() => resolve(false));
+      audio.play().catch(() => {
+        // Final fallback: try creating a new Audio element
+        const fallback = new Audio(audioUrl);
+        fallback.onended = () => { URL.revokeObjectURL(audioUrl); resolve(true); };
+        fallback.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(false); };
+        fallback.play().catch(() => { URL.revokeObjectURL(audioUrl); resolve(false); });
+      });
     });
   } catch {
     return false;
