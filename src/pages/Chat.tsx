@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
-import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus, Paperclip, X, FileText } from "lucide-react";
+import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus, Paperclip, X, FileText, Briefcase, User } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import NotificationBell from "@/components/NotificationBell";
 import FocusModeToggle from "@/components/FocusModeToggle";
 import ReactMarkdown from "react-markdown";
@@ -60,7 +61,7 @@ async function streamChat({
       apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
       Authorization: `Bearer ${authToken}`,
     },
-    body: JSON.stringify({ messages, profile }),
+    body: JSON.stringify({ messages, profile, jarvisMode: (profile as any)?._jarvisMode }),
   });
 
   if (!resp.ok) {
@@ -292,6 +293,8 @@ const Chat = () => {
   const voiceTranscriptRef = useRef("");
   const shouldAutoSendRef = useRef(false);
   const [activeProfile, setActiveProfile] = useState<any>(null);
+  const [allProfiles, setAllProfiles] = useState<{ personal: any; professional: any }>({ personal: null, professional: null });
+  const [jarvisMode, setJarvisMode] = useState<"personal" | "professional">("personal");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -495,39 +498,51 @@ const Chat = () => {
     loadConversation();
   }, [user]);
 
-  // Load active profile
+  // Load ALL profiles (personal + professional)
   useEffect(() => {
     if (!user) return;
-    const loadProfile = async () => {
+    const loadProfiles = async () => {
       const { data: profiles } = await supabase
         .from("jarvis_profiles")
         .select("*")
+        .eq("user_id", user.id);
+
+      if (!profiles || profiles.length === 0) return;
+
+      const { data: mems } = await supabase
+        .from("jarvis_memories")
+        .select("content")
         .eq("user_id", user.id)
-        .eq("is_active", true)
-        .limit(1);
+        .order("created_at", { ascending: false })
+        .limit(50);
 
-      if (profiles && profiles.length > 0) {
-        const p = profiles[0] as any;
-        const { data: mems } = await supabase
-          .from("jarvis_memories")
-          .select("content")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(50);
+      const memories = mems?.map((m: any) => m.content) || [];
 
-        setActiveProfile({
-          instructions: p.instructions,
-          user_name: p.user_name,
-          user_profession: p.user_profession,
-          user_preferences: p.user_preferences,
-          voice_settings: p.voice_settings,
-          focus_mode: (p as any).focus_mode,
-          focus_until: (p as any).focus_until,
-          memories: mems?.map((m: any) => m.content) || [],
-        });
-      }
+      const buildProfileData = (p: any) => ({
+        instructions: p.instructions,
+        user_name: p.user_name,
+        user_profession: p.user_profession,
+        user_preferences: p.user_preferences,
+        voice_settings: p.voice_settings,
+        focus_mode: p.focus_mode,
+        focus_until: p.focus_until,
+        memories,
+      });
+
+      const personalProfile = profiles.find((p: any) => p.profile_type === "personal");
+      const professionalProfile = profiles.find((p: any) => p.profile_type === "professional");
+
+      const newAllProfiles = {
+        personal: personalProfile ? buildProfileData(personalProfile) : null,
+        professional: professionalProfile ? buildProfileData(professionalProfile) : null,
+      };
+      setAllProfiles(newAllProfiles);
+
+      // Set active profile based on jarvisMode default (personal)
+      const activeP = personalProfile || profiles.find((p: any) => p.is_active) || profiles[0];
+      if (activeP) setActiveProfile(buildProfileData(activeP));
     };
-    loadProfile();
+    loadProfiles();
   }, [user]);
 
   useEffect(() => {
@@ -686,12 +701,35 @@ const Chat = () => {
       content: m.content,
     }));
 
+    // Build profile payload with both profiles and current mode
+    const profilePayload = {
+      ...activeProfile,
+      _jarvisMode: jarvisMode,
+      _allProfiles: allProfiles,
+    };
+
     let assistantContent = "";
     // Buffer for accumulating text to detect sentence boundaries
     let sentenceBuffer = "";
 
     const upsertAssistant = (chunk: string) => {
       assistantContent += chunk;
+      
+      // Detect [MODE:xxx] marker
+      const modeMatch = assistantContent.match(/^\[MODE:(personal|professional)\]\s*/);
+      if (modeMatch) {
+        const newMode = modeMatch[1] as "personal" | "professional";
+        if (newMode !== jarvisMode) {
+          setJarvisMode(newMode);
+          // Update active profile voice settings to match new mode
+          if (allProfiles[newMode]) {
+            setActiveProfile(allProfiles[newMode]);
+          }
+        }
+        // Strip marker from displayed content
+        assistantContent = assistantContent.replace(/^\[MODE:(personal|professional)\]\s*/, "");
+      }
+      
       const content = assistantContent;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -720,7 +758,7 @@ const Chat = () => {
     try {
       await streamChat({
         messages: history,
-        profile: activeProfile || undefined,
+        profile: profilePayload || undefined,
         onDelta: upsertAssistant,
         onToolCalls: (calls) => {
           for (const tc of calls) {
@@ -771,7 +809,7 @@ const Chat = () => {
       toast.error("Erro de conexão com Jarvis.");
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile, enqueueTTSChunk, pendingFiles]);
+  }, [input, isLoading, messages, ttsEnabled, conversationId, user, activeProfile, enqueueTTSChunk, pendingFiles, jarvisMode, allProfiles]);
 
   const exportChat = () => {
     const text = messages
@@ -847,7 +885,28 @@ const Chat = () => {
       <div className="p-4 border-b border-border/50 flex items-center gap-4">
         <JarvisAvatar size="sm" isSpeaking={isLoading || isSpeaking} isListening={voiceIsListening} />
         <div className="flex-1">
-          <h1 className="font-heading text-xl font-bold text-foreground">Chat com Jarvis</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-heading text-xl font-bold text-foreground">Chat com Jarvis</h1>
+            <Badge
+              variant="outline"
+              className={`text-[10px] cursor-pointer select-none transition-colors ${
+                jarvisMode === "professional"
+                  ? "border-accent text-accent"
+                  : "border-primary text-primary"
+              }`}
+              onClick={() => {
+                const newMode = jarvisMode === "personal" ? "professional" : "personal";
+                setJarvisMode(newMode);
+                if (allProfiles[newMode]) setActiveProfile(allProfiles[newMode]);
+              }}
+            >
+              {jarvisMode === "professional" ? (
+                <><Briefcase className="h-3 w-3 mr-1" /> Profissional</>
+              ) : (
+                <><User className="h-3 w-3 mr-1" /> Pessoal</>
+              )}
+            </Badge>
+          </div>
           <p className="text-xs text-muted-foreground">
             {voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
