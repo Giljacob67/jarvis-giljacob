@@ -1067,6 +1067,7 @@ REGRAS DE TROCA DE MODO:
 
 // ─── Main Handler ───────────────────────────────────────────────────
 serve(async (req) => {
+  const t_requestStart = Date.now();
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -1208,9 +1209,26 @@ serve(async (req) => {
         choices: [{ delta: { content: preamble + "\n\n" } }],
       });
       writer.write(encoder.encode(`data: ${preambleSSE}\n\n`));
+      console.log(`[PERF] preamble written at +${Date.now() - t_requestStart}ms`);
 
-      // ─── Execute ALL tool calls in parallel ─────────────────────
-      const toolResultsPromises = toolCalls.map(async (tc: any) => {
+      // ─── pMap: bounded-concurrency parallel execution ──────────
+      async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
+        const results: R[] = new Array(items.length);
+        let index = 0;
+        async function worker() {
+          while (index < items.length) {
+            const i = index++;
+            results[i] = await fn(items[i]);
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+        return results;
+      }
+
+      // ─── Execute tool calls with concurrency=3 ─────────────────
+      const t_toolsStart = Date.now();
+
+      const toolResults = await pMap(toolCalls, async (tc: any) => {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
           : tc.function.arguments;
@@ -1226,9 +1244,10 @@ serve(async (req) => {
           tool_call_id: tc.id,
           content: result,
         };
-      });
+      }, 3);
 
-      const toolResults = await Promise.all(toolResultsPromises);
+      const t_toolsEnd = Date.now();
+      console.log(`[PERF] tools executed in ${t_toolsEnd - t_toolsStart}ms (${toolCalls.length} tools, concurrency=3)`);
 
       const finalMessages = [
         ...allMessages,
