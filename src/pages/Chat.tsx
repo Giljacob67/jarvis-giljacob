@@ -536,6 +536,9 @@ const Chat = () => {
                 analyze_legal_document: "⚖️ Documento analisado",
                 draft_legal_outline: "📝 Esboço jurídico gerado",
                 compare_documents: "🔄 Documentos comparados",
+                send_email: "📧 E-mail enviado",
+                draft_email: "📝 Rascunho gerado",
+                search_documents: "🔍 Documentos pesquisados",
               };
               toast.success(toolLabels[tc.tool] || "Ação executada", {
                 description: tc.result.message,
