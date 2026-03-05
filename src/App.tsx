@@ -16,6 +16,7 @@ import Automations from "./pages/Automations";
 import ActivityLog from "./pages/ActivityLog";
 import SettingsPage from "./pages/SettingsPage";
 import Tasks from "./pages/Tasks";
+import Plans from "./pages/Plans";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
@@ -45,6 +46,7 @@ function ProtectedRoutes() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/tasks" element={<Tasks />} />
+        <Route path="/plans" element={<Plans />} />
         <Route path="/emails" element={<Emails />} />
         <Route path="/agenda" element={<Agenda />} />
         <Route path="/files" element={<Files />} />

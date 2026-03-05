@@ -697,8 +697,38 @@ async function executeTool(
 
     case "create_execution_plan": {
       const { plan_name, steps, create_tasks } = args;
-      const planSummary = steps.map((s: any) => `${s.order}. ${s.action}${s.tool ? ` [${s.tool}]` : ""}${s.estimated_minutes ? ` ~${s.estimated_minutes}min` : ""}`).join("\n");
       
+      // Insert into execution_plans table
+      const { data: planData, error: planError } = await supabase.from("execution_plans").insert({
+        user_id: userId,
+        title: plan_name,
+        status: "pending",
+      }).select("id").single();
+
+      if (planError) {
+        return JSON.stringify({ success: false, error: planError.message });
+      }
+
+      const planId = planData.id;
+      const sensibleTools = ["send_email", "create_calendar_event", "delete_task"];
+
+      // Insert steps
+      for (const step of steps) {
+        const isSensible = sensibleTools.includes(step.tool || "");
+        await supabase.from("execution_steps").insert({
+          plan_id: planId,
+          user_id: userId,
+          step_index: (step.order || 0) - 1,
+          title: step.action,
+          tool_name: step.tool || null,
+          tool_args: {},
+          status: isSensible ? "needs_confirmation" : "pending",
+          requires_confirmation: isSensible,
+        });
+      }
+
+      // Also save as operational context for backward compat
+      const planSummary = steps.map((s: any) => `${s.order}. ${s.action}${s.tool ? ` [${s.tool}]` : ""}${s.estimated_minutes ? ` ~${s.estimated_minutes}min` : ""}`).join("\n");
       await supabase.from("operational_context").upsert({
         user_id: userId,
         key: `plan-${plan_name.toLowerCase().replace(/\s+/g, "-")}`,
@@ -723,10 +753,14 @@ async function executeTool(
         }
       }
 
+      // Update plan status
+      await supabase.from("execution_plans").update({ status: "done", updated_at: new Date().toISOString() }).eq("id", planId);
+
       return JSON.stringify({
         success: true,
-        message: `Plano "${plan_name}" criado com ${steps.length} etapas.${create_tasks ? ` ${tasksCreated} tarefas criadas.` : ""}`,
+        message: `Plano "${plan_name}" criado com ${steps.length} etapas.${create_tasks ? ` ${tasksCreated} tarefas criadas.` : ""} Acesse a página Planos para acompanhar.`,
         plan: planSummary,
+        plan_id: planId,
       });
     }
 
@@ -964,7 +998,18 @@ IMPORTANTE: Use os DADOS REAIS fornecidos abaixo para responder sobre e-mails, a
 Estilo de resposta:
 - Respostas curtas e objetivas para perguntas simples
 - Respostas detalhadas e estruturadas para questões complexas
-- Quando executar ferramentas, informe o resultado de forma natural e concisa`;
+- Quando executar ferramentas, informe o resultado de forma natural e concisa
+
+═══════════════════════════════════════════
+ANTI-REPETIÇÃO & VOICE BUDGET
+═══════════════════════════════════════════
+- NÃO repita briefing/agenda se já mencionou nos últimos 30 minutos da conversa
+- NÃO traga tópicos não solicitados que já foram cobertos (ex: academia/treino/exercício)
+- Se o mesmo tópico foi discutido recentemente na conversa, responda de forma RESUMIDA
+- Respostas por voz devem ser CURTAS: máximo 1-2 frases. Se precisar detalhar, pergunte "Quer que eu detalhe?"
+- NÃO faça perguntas desnecessárias. Assuma um default razoável e ofereça alternativa brevemente
+- Se dados de ferramentas (agenda, tarefas, emails) foram consultados recentemente e nada mudou, use a informação que já tem sem re-consultar
+- Quando receber sessionState com lastToolResults, reutilize dados com <10 min ao invés de executar a tool novamente`;
 
 
 function buildSystemPrompt(profile?: {
@@ -1073,7 +1118,7 @@ serve(async (req) => {
   }
 
   try {
-    const { messages, profile, jarvisMode, userTimezone: rawTz } = await req.json();
+    const { messages, profile, jarvisMode, userTimezone: rawTz, sessionState } = await req.json();
     const userTimezone = rawTz || "America/Sao_Paulo";
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
@@ -1210,6 +1255,12 @@ serve(async (req) => {
       });
       writer.write(encoder.encode(`data: ${preambleSSE}\n\n`));
       console.log(`[PERF] preamble written at +${Date.now() - t_requestStart}ms`);
+
+      // ─── Send tool_calls_start SSE for real-time HUD ──────────
+      const toolStartSSE = JSON.stringify({
+        choices: [{ delta: { tool_calls_start: toolCalls.map((tc: any) => ({ tool: tc.function.name })) } }],
+      });
+      writer.write(encoder.encode(`data: ${toolStartSSE}\n\n`));
 
       // ─── pMap: bounded-concurrency parallel execution ──────────
       async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
