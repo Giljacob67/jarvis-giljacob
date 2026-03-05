@@ -164,6 +164,8 @@ export type Database = {
       jarvis_profiles: {
         Row: {
           created_at: string
+          focus_mode: boolean
+          focus_until: string | null
           id: string
           instructions: string
           is_active: boolean
@@ -177,6 +179,8 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          focus_mode?: boolean
+          focus_until?: string | null
           id?: string
           instructions?: string
           is_active?: boolean
@@ -190,6 +194,8 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          focus_mode?: boolean
+          focus_until?: string | null
           id?: string
           instructions?: string
           is_active?: boolean
@@ -237,6 +243,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      notifications: {
+        Row: {
+          body: string | null
+          created_at: string
+          id: string
+          metadata: Json | null
+          read: boolean
+          title: string
+          type: string
+          user_id: string
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          read?: boolean
+          title: string
+          type?: string
+          user_id: string
+        }
+        Update: {
+          body?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          read?: boolean
+          title?: string
+          type?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       operational_context: {
         Row: {

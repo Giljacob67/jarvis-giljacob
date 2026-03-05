@@ -3,6 +3,7 @@ import AppSidebar from "./AppSidebar";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Menu } from "lucide-react";
 import JarvisAvatar from "./JarvisAvatar";
+import NotificationBell from "./NotificationBell";
 
 const AppLayout = ({ children }: { children: ReactNode }) => {
   const isMobile = useIsMobile();
@@ -22,7 +23,8 @@ const AppLayout = ({ children }: { children: ReactNode }) => {
             <Menu size={22} />
           </button>
           <JarvisAvatar size="sm" />
-          <h1 className="font-display text-base tracking-wider text-gradient-blue">JARVIS</h1>
+          <h1 className="font-display text-base tracking-wider text-gradient-blue flex-1">JARVIS</h1>
+          <NotificationBell />
         </header>
       )}
 
