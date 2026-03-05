@@ -216,6 +216,43 @@ async function internalLLMCall(systemPrompt: string, userPrompt: string): Promis
   return data.choices?.[0]?.message?.content || "Erro ao processar análise.";
 }
 
+// ─── Generate embedding via Lovable AI ──────────────────────────────
+async function generateEmbedding(text: string): Promise<number[]> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+  const resp = await fetch("https://ai.gateway.lovable.dev/v1/embeddings", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/text-embedding-004",
+      input: text.slice(0, 8000),
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Embedding failed: ${resp.status}`);
+  const data = await resp.json();
+  return data.data?.[0]?.embedding || [];
+}
+
+// ─── Audit Logger ───────────────────────────────────────────────────
+async function logToolExecution(supabase: any, userId: string, toolName: string, args: any, result: string) {
+  try {
+    const parsed = JSON.parse(result);
+    await supabase.from("activity_logs").insert({
+      user_id: userId,
+      action_type: "tool",
+      title: `Jarvis executou: ${toolName}`,
+      description: parsed.message || `Tool ${toolName} executada`,
+      status: parsed.success ? "success" : "error",
+      metadata: { tool: toolName, args, result: parsed },
+    });
+  } catch {
+    // Silent fail for audit logging
+  }
+}
+
 // ─── Tool Definitions ───────────────────────────────────────────────
 const tools = [
   {
@@ -285,7 +322,7 @@ const tools = [
     type: "function",
     function: {
       name: "save_memory",
-      description: "Salva uma informação permanente sobre o usuário (preferência, fato pessoal, hábito). Use quando o usuário mencionar algo sobre si mesmo que pode ser útil no futuro. Exemplos: 'prefiro reuniões de manhã', 'meu cachorro se chama Oliver', 'sou advogado tributarista'.",
+      description: "Salva uma informação permanente sobre o usuário (preferência, fato pessoal, hábito). Use quando o usuário mencionar algo sobre si mesmo que pode ser útil no futuro.",
       parameters: {
         type: "object",
         properties: {
@@ -300,11 +337,11 @@ const tools = [
     type: "function",
     function: {
       name: "save_operational_context",
-      description: "Salva ou atualiza um contexto operacional temporário — algo que está em andamento. Exemplos: 'processo X em fase de recurso', 'aguardando retorno do cliente Y', 'prazo do contrato Z vence dia 15'. Use quando o usuário mencionar algo em andamento que precisa ser lembrado nos próximos dias.",
+      description: "Salva ou atualiza um contexto operacional temporário — algo que está em andamento.",
       parameters: {
         type: "object",
         properties: {
-          key: { type: "string", description: "Identificador curto e único (ex: 'processo-recurso-xyz', 'cliente-retorno-y')" },
+          key: { type: "string", description: "Identificador curto e único" },
           value: { type: "string", description: "Descrição do contexto" },
           category: { type: "string", enum: ["project", "deadline", "follow_up", "pending", "general"], description: "Tipo de contexto" },
           expires_in_days: { type: "integer", description: "Dias até expirar (padrão: 30)" },
@@ -317,7 +354,7 @@ const tools = [
     type: "function",
     function: {
       name: "recall_memory",
-      description: "Busca nas memórias e contextos operacionais do usuário. Use quando o usuário perguntar 'o que você sabe sobre mim?', 'lembra daquele processo?', ou quando precisar consultar algo salvo anteriormente.",
+      description: "Busca nas memórias e contextos operacionais do usuário.",
       parameters: {
         type: "object",
         properties: {
@@ -332,7 +369,7 @@ const tools = [
     type: "function",
     function: {
       name: "create_execution_plan",
-      description: "Cria um plano de execução para uma tarefa complexa que envolve múltiplas etapas. Use quando o usuário pedir algo que requer planejamento: 'organize minha semana', 'prepare o caso do cliente X', 'monte uma estratégia para...'. O plano é salvo como contexto operacional e as subtarefas podem ser criadas automaticamente.",
+      description: "Cria um plano de execução para uma tarefa complexa que envolve múltiplas etapas.",
       parameters: {
         type: "object",
         properties: {
@@ -344,7 +381,7 @@ const tools = [
               properties: {
                 order: { type: "integer", description: "Ordem da etapa" },
                 action: { type: "string", description: "Descrição da ação" },
-                tool: { type: "string", description: "Ferramenta a usar (create_task, create_calendar_event, etc.) ou 'manual' se requer ação humana" },
+                tool: { type: "string", description: "Ferramenta a usar ou 'manual'" },
                 estimated_minutes: { type: "integer", description: "Tempo estimado em minutos" },
               },
               required: ["order", "action"],
@@ -357,20 +394,20 @@ const tools = [
       },
     },
   },
-  // ─── Legal/Advocacy Skill ───────────────────────────────────────
+  // ─── Legal/Advocacy Skills ────────────────────────────────────
   {
     type: "function",
     function: {
       name: "analyze_legal_document",
-      description: "Analisa um texto jurídico (contrato, petição, cláusula, etc.) e retorna: resumo, cláusulas críticas, riscos, prazos e recomendações. Use quando o usuário colar ou descrever um documento legal e pedir análise, revisão ou resumo.",
+      description: "Analisa um texto jurídico e retorna: resumo, cláusulas críticas, riscos, prazos e recomendações.",
       parameters: {
         type: "object",
         properties: {
-          document_text: { type: "string", description: "O texto do documento jurídico a ser analisado" },
+          document_text: { type: "string", description: "O texto do documento jurídico" },
           analysis_type: {
             type: "string",
             enum: ["full", "risks", "deadlines", "summary", "clauses"],
-            description: "Tipo de análise: full (completa), risks (riscos), deadlines (prazos), summary (resumo), clauses (cláusulas críticas)",
+            description: "Tipo de análise",
           },
           document_type: {
             type: "string",
@@ -386,7 +423,7 @@ const tools = [
     type: "function",
     function: {
       name: "draft_legal_outline",
-      description: "Gera um esboço/roteiro para uma peça jurídica (petição, recurso, parecer, contestação, etc.). Não gera o documento final, mas estrutura os argumentos, fundamentos legais e pontos-chave. Use quando o usuário pedir para redigir, esboçar ou montar uma peça jurídica.",
+      description: "Gera um esboço/roteiro para uma peça jurídica.",
       parameters: {
         type: "object",
         properties: {
@@ -395,17 +432,9 @@ const tools = [
             enum: ["petition", "appeal", "defense", "opinion", "contract_draft", "letter", "other"],
             description: "Tipo da peça jurídica",
           },
-          context: { type: "string", description: "Contexto do caso: fatos, partes, pretensão, fundamentos" },
-          key_arguments: {
-            type: "array",
-            items: { type: "string" },
-            description: "Argumentos principais a serem desenvolvidos",
-          },
-          legal_basis: {
-            type: "array",
-            items: { type: "string" },
-            description: "Base legal (artigos, leis, jurisprudência) a ser citada",
-          },
+          context: { type: "string", description: "Contexto do caso" },
+          key_arguments: { type: "array", items: { type: "string" }, description: "Argumentos principais" },
+          legal_basis: { type: "array", items: { type: "string" }, description: "Base legal" },
         },
         required: ["piece_type", "context"],
       },
@@ -415,15 +444,66 @@ const tools = [
     type: "function",
     function: {
       name: "compare_documents",
-      description: "Compara dois textos jurídicos e identifica diferenças, conflitos, cláusulas divergentes ou alterações entre versões. Use quando o usuário pedir para comparar contratos, versões de documentos ou cláusulas.",
+      description: "Compara dois textos jurídicos e identifica diferenças, conflitos e alterações.",
       parameters: {
         type: "object",
         properties: {
-          document_a: { type: "string", description: "Primeiro documento (texto)" },
-          document_b: { type: "string", description: "Segundo documento (texto)" },
-          focus: { type: "string", description: "Aspecto específico para focar na comparação (ex: 'cláusula de multa', 'prazos', 'valores')" },
+          document_a: { type: "string", description: "Primeiro documento" },
+          document_b: { type: "string", description: "Segundo documento" },
+          focus: { type: "string", description: "Aspecto específico para focar" },
         },
         required: ["document_a", "document_b"],
+      },
+    },
+  },
+  // ─── Email Tools (send/draft) ─────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "Envia um e-mail pelo Gmail do usuário. SEMPRE peça confirmação antes de enviar. Mostre o destinatário, assunto e corpo para o usuário confirmar.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Endereço de e-mail do destinatário" },
+          subject: { type: "string", description: "Assunto do e-mail" },
+          body: { type: "string", description: "Corpo do e-mail em texto ou HTML" },
+          confirmed: { type: "boolean", description: "Se o usuário já confirmou o envio. DEVE ser true para enviar." },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "draft_email",
+      description: "Gera um rascunho de e-mail profissional baseado no contexto fornecido. NÃO envia — apenas mostra o rascunho para revisão.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Destinatário (se conhecido)" },
+          context: { type: "string", description: "Contexto e objetivo do e-mail" },
+          tone: { type: "string", enum: ["formal", "casual", "legal", "commercial"], description: "Tom do e-mail" },
+          language: { type: "string", enum: ["pt-BR", "en"], description: "Idioma" },
+        },
+        required: ["context"],
+      },
+    },
+  },
+  // ─── Document Search (RAG) ────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "search_documents",
+      description: "Busca semântica nos documentos do usuário (PDFs, DOCs, etc.) usando inteligência artificial. Use quando o usuário perguntar sobre conteúdo de documentos que ele enviou.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "A pergunta ou termo de busca" },
+          max_results: { type: "integer", description: "Número máximo de resultados (padrão: 5)" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -500,7 +580,6 @@ async function executeTool(
 
     case "complete_task": {
       const { task_title_search } = args;
-      // Find task by partial title match
       const { data: tasks } = await supabase
         .from("tasks")
         .select("id, title")
@@ -533,11 +612,10 @@ async function executeTool(
 
     case "create_calendar_event": {
       if (!googleToken) {
-        return JSON.stringify({ success: false, message: "Google Calendar não está conectado. Conecte sua conta Google nas configurações." });
+        return JSON.stringify({ success: false, message: "Google Calendar não está conectado." });
       }
 
       const { summary, start_datetime, end_datetime, description, location } = args;
-
       const event: any = {
         summary,
         start: { dateTime: start_datetime, timeZone: "America/Sao_Paulo" },
@@ -551,25 +629,14 @@ async function executeTool(
           "https://www.googleapis.com/calendar/v3/calendars/primary/events",
           {
             method: "POST",
-            headers: {
-              Authorization: `Bearer ${googleToken}`,
-              "Content-Type": "application/json",
-            },
+            headers: { Authorization: `Bearer ${googleToken}`, "Content-Type": "application/json" },
             body: JSON.stringify(event),
           }
         );
-
         const data = await resp.json();
-        if (data.error) {
-          return JSON.stringify({ success: false, message: `Erro ao criar evento: ${data.error.message}` });
-        }
-
-        return JSON.stringify({
-          success: true,
-          message: `Evento "${summary}" criado com sucesso no Google Calendar.`,
-          event_link: data.htmlLink,
-        });
-      } catch (e) {
+        if (data.error) return JSON.stringify({ success: false, message: `Erro: ${data.error.message}` });
+        return JSON.stringify({ success: true, message: `Evento "${summary}" criado no Calendar.`, event_link: data.htmlLink });
+      } catch {
         return JSON.stringify({ success: false, message: "Erro ao conectar com o Google Calendar." });
       }
     }
@@ -577,11 +644,8 @@ async function executeTool(
     case "save_memory": {
       const { content, category } = args;
       const { error } = await supabase.from("jarvis_memories").insert({
-        user_id: userId,
-        content,
-        category: category || "general",
+        user_id: userId, content, category: category || "general",
       });
-
       if (error) return JSON.stringify({ success: false, error: error.message });
       return JSON.stringify({ success: true, message: `Memória salva: "${content}"` });
     }
@@ -589,25 +653,16 @@ async function executeTool(
     case "save_operational_context": {
       const { key, value, category: ctxCategory, expires_in_days } = args;
       const expiresAt = new Date(Date.now() + (expires_in_days || 30) * 24 * 60 * 60 * 1000).toISOString();
-
-      // Upsert by user_id + key
       const { error } = await supabase.from("operational_context").upsert({
-        user_id: userId,
-        key,
-        value,
-        category: ctxCategory || "general",
-        expires_at: expiresAt,
-        updated_at: new Date().toISOString(),
+        user_id: userId, key, value, category: ctxCategory || "general",
+        expires_at: expiresAt, updated_at: new Date().toISOString(),
       }, { onConflict: "user_id,key" });
-
       if (error) return JSON.stringify({ success: false, error: error.message });
       return JSON.stringify({ success: true, message: `Contexto operacional salvo: "${key}"` });
     }
 
     case "recall_memory": {
       const { search_query } = args;
-      
-      // Search long-term memories
       const { data: memories } = await supabase
         .from("jarvis_memories")
         .select("content, category, created_at")
@@ -616,7 +671,6 @@ async function executeTool(
         .order("created_at", { ascending: false })
         .limit(10);
 
-      // Search operational context
       const { data: opCtx } = await supabase
         .from("operational_context")
         .select("key, value, category, updated_at")
@@ -640,23 +694,18 @@ async function executeTool(
       });
     }
 
-    // ─── Planner Skill ──────────────────────────────────────────
     case "create_execution_plan": {
       const { plan_name, steps, create_tasks } = args;
-      
-      // Save plan as operational context
       const planSummary = steps.map((s: any) => `${s.order}. ${s.action}${s.tool ? ` [${s.tool}]` : ""}${s.estimated_minutes ? ` ~${s.estimated_minutes}min` : ""}`).join("\n");
       
       await supabase.from("operational_context").upsert({
         user_id: userId,
         key: `plan-${plan_name.toLowerCase().replace(/\s+/g, "-")}`,
-        value: planSummary,
-        category: "project",
+        value: planSummary, category: "project",
         expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
         updated_at: new Date().toISOString(),
       }, { onConflict: "user_id,key" });
 
-      // Optionally create tasks for each step
       let tasksCreated = 0;
       if (create_tasks) {
         const today = new Date();
@@ -683,108 +732,155 @@ async function executeTool(
     // ─── Legal/Advocacy Skills ────────────────────────────────────
     case "analyze_legal_document": {
       const { document_text, analysis_type, document_type } = args;
-
       const analysisPrompts: Record<string, string> = {
-        full: `Analise este documento jurídico${document_type ? ` (tipo: ${document_type})` : ""} de forma COMPLETA. Forneça:
-1. **Resumo executivo** (2-3 parágrafos)
-2. **Cláusulas críticas** (liste cada uma com número/referência e explicação)
-3. **Riscos identificados** (classifique como Alto/Médio/Baixo)
-4. **Prazos e datas** importantes
-5. **Recomendações** de ação
-6. **Pontos de atenção** para negociação
-
-Seja preciso, objetivo e use linguagem jurídica técnica quando apropriado.`,
-        risks: `Analise APENAS os RISCOS deste documento jurídico. Para cada risco:
-- Descrição do risco
-- Severidade (Alto/Médio/Baixo)
-- Cláusula relacionada
-- Recomendação de mitigação`,
-        deadlines: `Extraia TODOS os PRAZOS e DATAS deste documento jurídico:
-- Data ou prazo
-- O que deve acontecer
-- Consequência do descumprimento
-- Status (se possível inferir)`,
-        summary: `Faça um RESUMO EXECUTIVO conciso deste documento jurídico em 3-5 parágrafos. Inclua: partes, objeto, principais obrigações, valores e prazo.`,
-        clauses: `Liste e explique as CLÁUSULAS CRÍTICAS deste documento — aquelas que têm maior impacto jurídico ou financeiro. Para cada uma: número, texto resumido, implicação prática.`,
+        full: `Analise este documento jurídico${document_type ? ` (tipo: ${document_type})` : ""} de forma COMPLETA. Forneça:\n1. **Resumo executivo**\n2. **Cláusulas críticas**\n3. **Riscos identificados** (Alto/Médio/Baixo)\n4. **Prazos e datas**\n5. **Recomendações**\n6. **Pontos de atenção**`,
+        risks: `Analise APENAS os RISCOS deste documento jurídico. Para cada: descrição, severidade, cláusula, mitigação.`,
+        deadlines: `Extraia TODOS os PRAZOS e DATAS deste documento jurídico.`,
+        summary: `Faça um RESUMO EXECUTIVO conciso deste documento jurídico em 3-5 parágrafos.`,
+        clauses: `Liste e explique as CLÁUSULAS CRÍTICAS deste documento.`,
       };
-
       try {
         const analysis = await internalLLMCall(
           "Você é um advogado sênior brasileiro especialista em análise documental. Responda sempre em PT-BR com rigor técnico.",
           `${analysisPrompts[analysis_type] || analysisPrompts.full}\n\n--- DOCUMENTO ---\n${document_text.slice(0, 15000)}`
         );
-
         return JSON.stringify({ success: true, analysis, analysis_type });
-      } catch (e) {
+      } catch {
         return JSON.stringify({ success: false, message: "Erro ao analisar documento." });
       }
     }
 
     case "draft_legal_outline": {
       const { piece_type, context, key_arguments, legal_basis } = args;
-
       const pieceLabels: Record<string, string> = {
         petition: "Petição Inicial", appeal: "Recurso", defense: "Contestação",
         opinion: "Parecer Jurídico", contract_draft: "Minuta de Contrato",
         letter: "Notificação Extrajudicial", other: "Peça Jurídica",
       };
-
-      const prompt = `Crie um ESBOÇO/ROTEIRO estruturado para: ${pieceLabels[piece_type] || "Peça Jurídica"}
-
-CONTEXTO DO CASO:
-${context}
-
-${key_arguments?.length ? `ARGUMENTOS PRINCIPAIS:\n${key_arguments.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}` : ""}
-
-${legal_basis?.length ? `BASE LEGAL:\n${legal_basis.map((b: string) => `- ${b}`).join("\n")}` : ""}
-
-Forneça:
-1. **Estrutura do documento** (seções e subseções)
-2. **Síntese dos fatos** (como apresentar)
-3. **Fundamentos jurídicos** (artigos, jurisprudência aplicável)
-4. **Linha argumentativa** (sequência lógica dos argumentos)
-5. **Pedidos** (o que pedir e como formular)
-6. **Documentos a anexar** (sugestão)
-
-IMPORTANTE: Isso é um ROTEIRO, não o documento final. Seja estruturado e prático.`;
-
+      const prompt = `Crie um ESBOÇO/ROTEIRO estruturado para: ${pieceLabels[piece_type] || "Peça Jurídica"}\n\nCONTEXTO:\n${context}\n\n${key_arguments?.length ? `ARGUMENTOS:\n${key_arguments.map((a: string, i: number) => `${i + 1}. ${a}`).join("\n")}` : ""}\n\n${legal_basis?.length ? `BASE LEGAL:\n${legal_basis.map((b: string) => `- ${b}`).join("\n")}` : ""}\n\nForneça: Estrutura, Síntese dos fatos, Fundamentos jurídicos, Linha argumentativa, Pedidos, Documentos a anexar.`;
       try {
         const outline = await internalLLMCall(
-          "Você é um advogado sênior brasileiro especialista em redação jurídica. Crie roteiros práticos e bem estruturados.",
+          "Você é um advogado sênior brasileiro especialista em redação jurídica.",
           prompt
         );
-
         return JSON.stringify({ success: true, outline, piece_type: pieceLabels[piece_type] });
-      } catch (e) {
+      } catch {
         return JSON.stringify({ success: false, message: "Erro ao gerar esboço jurídico." });
       }
     }
 
     case "compare_documents": {
       const { document_a, document_b, focus } = args;
-
-      const prompt = `Compare os dois documentos jurídicos abaixo e identifique:
-1. **Diferenças principais** (cláusulas alteradas, adicionadas ou removidas)
-2. **Conflitos** (cláusulas contraditórias entre si)
-3. **Alterações de valores, prazos ou condições**
-4. **Impacto jurídico** das diferenças
-${focus ? `\nFOCO ESPECIAL: ${focus}` : ""}
-
---- DOCUMENTO A ---
-${document_a.slice(0, 8000)}
-
---- DOCUMENTO B ---
-${document_b.slice(0, 8000)}`;
-
+      const prompt = `Compare os dois documentos jurídicos:\n1. Diferenças principais\n2. Conflitos\n3. Alterações de valores/prazos\n4. Impacto jurídico\n${focus ? `FOCO: ${focus}` : ""}\n\n--- DOC A ---\n${document_a.slice(0, 8000)}\n\n--- DOC B ---\n${document_b.slice(0, 8000)}`;
       try {
         const comparison = await internalLLMCall(
           "Você é um advogado sênior brasileiro especialista em revisão e comparação de documentos jurídicos.",
           prompt
         );
-
         return JSON.stringify({ success: true, comparison });
-      } catch (e) {
+      } catch {
         return JSON.stringify({ success: false, message: "Erro ao comparar documentos." });
+      }
+    }
+
+    // ─── Email Tools ──────────────────────────────────────────────
+    case "send_email": {
+      if (!googleToken) {
+        return JSON.stringify({ success: false, message: "Gmail não está conectado." });
+      }
+      const { to, subject, body, confirmed } = args;
+      if (!confirmed) {
+        return JSON.stringify({
+          success: false,
+          needs_confirmation: true,
+          message: `Posso enviar este e-mail?\n\n**Para:** ${to}\n**Assunto:** ${subject}\n**Corpo:** ${body.slice(0, 200)}${body.length > 200 ? "..." : ""}\n\nConfirme para enviar.`,
+        });
+      }
+
+      // Actually send via Gmail API
+      const rawEmail = [
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        `Content-Type: text/html; charset=utf-8`,
+        "",
+        body,
+      ].join("\r\n");
+
+      const encoded = btoa(unescape(encodeURIComponent(rawEmail)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+
+      try {
+        const resp = await fetch(
+          "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${googleToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ raw: encoded }),
+          }
+        );
+        const data = await resp.json();
+        if (data.error) return JSON.stringify({ success: false, message: `Erro ao enviar: ${data.error.message}` });
+        return JSON.stringify({ success: true, message: `E-mail enviado para ${to} com assunto "${subject}".` });
+      } catch {
+        return JSON.stringify({ success: false, message: "Erro ao enviar e-mail." });
+      }
+    }
+
+    case "draft_email": {
+      const { to, context, tone, language } = args;
+      const toneLabel = { formal: "formal e profissional", casual: "casual e amigável", legal: "jurídico e técnico", commercial: "comercial e persuasivo" }[tone || "formal"] || "formal";
+      const lang = language === "en" ? "inglês" : "português brasileiro";
+      
+      try {
+        const draft = await internalLLMCall(
+          `Você é um redator profissional. Escreva e-mails no tom ${toneLabel} em ${lang}.`,
+          `Redija um e-mail com base no contexto:\n${context}\n${to ? `Destinatário: ${to}` : ""}\n\nRetorne APENAS o e-mail (assunto + corpo), sem explicações.`
+        );
+        return JSON.stringify({ success: true, draft, message: "Rascunho gerado. Revise e confirme para enviar." });
+      } catch {
+        return JSON.stringify({ success: false, message: "Erro ao gerar rascunho." });
+      }
+    }
+
+    // ─── Document Search (RAG) ────────────────────────────────────
+    case "search_documents": {
+      const { query, max_results } = args;
+      try {
+        const embedding = await generateEmbedding(query);
+        if (embedding.length === 0) {
+          return JSON.stringify({ success: false, message: "Erro ao gerar embedding para busca." });
+        }
+
+        const { data: chunks, error } = await supabase.rpc("search_document_chunks", {
+          query_embedding: embedding,
+          match_user_id: userId,
+          match_count: max_results || 5,
+          match_threshold: 0.5,
+        });
+
+        if (error) return JSON.stringify({ success: false, message: error.message });
+        if (!chunks || chunks.length === 0) {
+          return JSON.stringify({ success: true, found: 0, message: "Nenhum trecho relevante encontrado nos seus documentos." });
+        }
+
+        // Get document names
+        const docIds = [...new Set(chunks.map((c: any) => c.document_id))];
+        const { data: docs } = await supabase
+          .from("documents")
+          .select("id, name")
+          .in("id", docIds);
+        const docNames: Record<string, string> = {};
+        (docs || []).forEach((d: any) => { docNames[d.id] = d.name; });
+
+        const results = chunks.map((c: any) => 
+          `[${docNames[c.document_id] || "Documento"}] (relevância: ${(c.similarity * 100).toFixed(0)}%):\n${c.content}`
+        ).join("\n\n---\n\n");
+
+        return JSON.stringify({ success: true, found: chunks.length, results });
+      } catch (e) {
+        return JSON.stringify({ success: false, message: "Erro na busca semântica." });
       }
     }
 
@@ -823,8 +919,10 @@ SKILLS REGISTRY (suas habilidades modulares)
 - Salvar contexto operacional → save_operational_context
 - Buscar memórias → recall_memory
 
-📧 SKILL: E-mail (leitura)
+📧 SKILL: E-mail (leitura + envio)
 - Dados em tempo real fornecidos abaixo
+- Enviar e-mail → send_email (SEMPRE peça confirmação antes!)
+- Redigir rascunho → draft_email (mostra para revisão, não envia)
 
 📰 SKILL: Informações
 - Notícias e clima fornecidos em tempo real abaixo
@@ -832,31 +930,16 @@ SKILLS REGISTRY (suas habilidades modulares)
 📋 SKILL: Planejamento
 - Planejar tarefas complexas → create_execution_plan
 - Quando o pedido envolve múltiplas etapas, CRIE UM PLANO antes de executar
-- O plano pode gerar tarefas automaticamente (create_tasks=true)
 
 ⚖️ SKILL: Advocacia & Jurídico
-- Analisar documento jurídico → analyze_legal_document (full, risks, deadlines, summary, clauses)
-- Esboçar peça jurídica → draft_legal_outline (petição, recurso, contestação, parecer, etc.)
-- Comparar documentos/versões → compare_documents
-- IMPORTANTE: Para análises jurídicas, seja RIGOROSO e TÉCNICO. Use linguagem jurídica brasileira.
-- Ao analisar riscos, classifique como Alto/Médio/Baixo com justificativa.
-- Ao extrair prazos, sugira criar tarefas com create_task para cada prazo importante.
+- Analisar documento jurídico → analyze_legal_document
+- Esboçar peça jurídica → draft_legal_outline
+- Comparar documentos → compare_documents
+- IMPORTANTE: Seja RIGOROSO e TÉCNICO em análises jurídicas.
 
-═══════════════════════════════════════════
-PLANNER (para pedidos complexos)
-═══════════════════════════════════════════
-
-Quando o usuário fizer um pedido complexo que envolve múltiplas etapas:
-1. Use create_execution_plan para criar o plano
-2. Comunique o plano de forma resumida ao usuário
-3. Pergunte se deseja executar (se envolve ações irreversíveis)
-4. Execute as etapas usando as ferramentas disponíveis
-
-Exemplos de pedidos que ativam o Planner:
-- "Organize minha semana"
-- "Prepare o caso do cliente X"
-- "Monte uma estratégia para o contrato Y"
-- "Analise este contrato e crie tarefas para cada prazo"
+📄 SKILL: Documentos & Conhecimento (RAG)
+- Buscar nos documentos do usuário → search_documents
+- Use quando o usuário perguntar sobre documentos enviados
 
 ═══════════════════════════════════════════
 REGRAS DE OPERAÇÃO
@@ -865,20 +948,15 @@ REGRAS DE OPERAÇÃO
 CONFIRMAÇÕES INTELIGENTES:
 - Ações REVERSÍVEIS (criar tarefa, salvar memória): execute diretamente.
 - Ações que ENVOLVEM TERCEIROS (criar evento, enviar email): confirme ANTES.
+- Para send_email: SEMPRE mostre o rascunho e peça confirmação (confirmed=false primeiro).
 
 GOVERNANÇA DE MEMÓRIA:
-- Salve automaticamente como MEMÓRIA LONGA quando o usuário:
-  • mencionar preferência, fato pessoal, hábito ou corrigir o Jarvis
-- Salve como CONTEXTO OPERACIONAL quando:
-  • algo estiver em andamento, houver prazo ou follow-up
+- Salve automaticamente como MEMÓRIA LONGA quando o usuário mencionar preferência, fato pessoal, hábito
+- Salve como CONTEXTO OPERACIONAL quando algo estiver em andamento
 - NÃO salve informações triviais. Seja silencioso ao salvar.
 
 MODO FOCO:
-- Quando o modo foco estiver ativo, adapte seu comportamento:
-  • Respostas mais curtas e diretas
-  • Evite digressões ou sugestões não solicitadas
-  • Foco total na tarefa em questão
-  • Mencione o tempo restante se relevante
+- Quando ativo: respostas curtas, sem digressões, foco total.
 
 IMPORTANTE: Use os DADOS REAIS fornecidos abaixo para responder sobre e-mails, agenda, notícias e clima.
 
@@ -886,7 +964,6 @@ Estilo de resposta:
 - Respostas curtas e objetivas para perguntas simples
 - Respostas detalhadas e estruturadas para questões complexas
 - Quando executar ferramentas, informe o resultado de forma natural e concisa`;
-
 
 
 function buildSystemPrompt(profile?: {
@@ -901,56 +978,37 @@ function buildSystemPrompt(profile?: {
   let prompt = BASE_SYSTEM_PROMPT;
 
   if (currentDateTime) {
-    prompt += `\n\n🕐 DATA E HORA ATUAL (fuso horário do usuário): ${currentDateTime}\nIMPORTANTE: Use SEMPRE esta data/hora como referência para saudações (bom dia/boa tarde/boa noite), para identificar "hoje", "amanhã", "esta semana", etc. Nunca invente ou assuma outra data.`;
+    prompt += `\n\n🕐 DATA E HORA ATUAL: ${currentDateTime}\nUse SEMPRE esta data/hora como referência.`;
   }
 
-  if (liveData?.calendar) {
-    prompt += `\n\n📅 AGENDA DA SEMANA (dados em tempo real do Google Calendar):\n${liveData.calendar}`;
-  }
-  if (liveData?.emails) {
-    prompt += `\n\n📧 E-MAILS RECENTES (dados em tempo real do Gmail):\n${liveData.emails}`;
-  }
-  if (liveData?.news) {
-    prompt += `\n\n📰 NOTÍCIAS DO DIA (dados em tempo real do GNews):\n${liveData.news}`;
-  }
-  if (liveData?.weather) {
-    prompt += `\n\n🌤️ CLIMA ATUAL:\n${liveData.weather}`;
-  }
+  if (liveData?.calendar) prompt += `\n\n📅 AGENDA DA SEMANA:\n${liveData.calendar}`;
+  if (liveData?.emails) prompt += `\n\n📧 E-MAILS RECENTES:\n${liveData.emails}`;
+  if (liveData?.news) prompt += `\n\n📰 NOTÍCIAS DO DIA:\n${liveData.news}`;
+  if (liveData?.weather) prompt += `\n\n🌤️ CLIMA ATUAL:\n${liveData.weather}`;
 
   if (!profile) return prompt;
 
-  if (profile.instructions) {
-    prompt += `\n\nInstruções adicionais do usuário:\n${profile.instructions}`;
-  }
+  if (profile.instructions) prompt += `\n\nInstruções adicionais:\n${profile.instructions}`;
 
   const personalInfo: string[] = [];
   if (profile.user_name) personalInfo.push(`Nome: ${profile.user_name}`);
   if (profile.user_profession) personalInfo.push(`Profissão: ${profile.user_profession}`);
   if (profile.user_preferences && Object.keys(profile.user_preferences).length > 0) {
-    Object.entries(profile.user_preferences).forEach(([k, v]) => {
-      personalInfo.push(`${k}: ${v}`);
-    });
+    Object.entries(profile.user_preferences).forEach(([k, v]) => personalInfo.push(`${k}: ${v}`));
   }
+  if (personalInfo.length > 0) prompt += `\n\nInformações sobre o usuário:\n${personalInfo.join("\n")}`;
 
-  if (personalInfo.length > 0) {
-    prompt += `\n\nInformações sobre o usuário:\n${personalInfo.join("\n")}`;
-  }
-
-  // ─── Layered Memory Injection ─────────────────────────────────
   if (profile.memories && profile.memories.length > 0) {
-    prompt += `\n\n🧠 MEMÓRIA LONGA (preferências e fatos permanentes sobre o usuário):\n${profile.memories.map((m) => `- ${m}`).join("\n")}`;
+    prompt += `\n\n🧠 MEMÓRIA LONGA:\n${profile.memories.map((m) => `- ${m}`).join("\n")}`;
   }
 
   if (operationalContext && operationalContext.length > 0) {
-    prompt += `\n\n📌 CONTEXTO OPERACIONAL (coisas em andamento — use como referência):\n${operationalContext.map((c) => `- ${c}`).join("\n")}`;
+    prompt += `\n\n📌 CONTEXTO OPERACIONAL:\n${operationalContext.map((c) => `- ${c}`).join("\n")}`;
   }
 
-  // ─── Focus Mode ──────────────────────────────────────────────
   if (profile.focus_mode && profile.focus_until) {
     const remaining = Math.max(0, Math.round((new Date(profile.focus_until).getTime() - Date.now()) / 60000));
-    if (remaining > 0) {
-      prompt += `\n\n🎯 MODO FOCO ATIVO (${remaining} minutos restantes). Seja ultra-conciso e direto. Evite digressões.`;
-    }
+    if (remaining > 0) prompt += `\n\n🎯 MODO FOCO ATIVO (${remaining} min restantes). Seja ultra-conciso.`;
   }
 
   return prompt;
@@ -967,14 +1025,12 @@ serve(async (req) => {
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    // Get user info
     let userId: string | null = null;
     let googleToken: string | null = null;
     let liveData: { calendar?: string; emails?: string; news?: string; weather?: string } = {};
     const authHeader = req.headers.get("Authorization");
     const userCity = profile?.user_preferences?.city || "São Paulo";
 
-    // Fetch news and weather in parallel
     const [newsData, weatherData] = await Promise.all([
       fetchNews(),
       fetchWeather(userCity),
@@ -992,7 +1048,6 @@ serve(async (req) => {
         if (user) {
           userId = user.id;
           
-          // Fetch Google token, and operational context in parallel
           const [gToken, opCtxResult] = await Promise.all([
             getValidGoogleToken(supabase, user.id),
             supabase
@@ -1021,17 +1076,11 @@ serve(async (req) => {
       console.error("Error fetching live data:", e);
     }
 
-    // Generate current date/time
     const now = new Date();
     const formatter = new Intl.DateTimeFormat("pt-BR", {
       timeZone: "America/Sao_Paulo",
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
     const currentDateTime = formatter.format(now);
     const systemPrompt = buildSystemPrompt(profile, liveData, currentDateTime, operationalContext);
@@ -1069,7 +1118,7 @@ serve(async (req) => {
       }
       if (initialResponse.status === 402) {
         return new Response(
-          JSON.stringify({ error: "Créditos insuficientes. Adicione créditos ao workspace." }),
+          JSON.stringify({ error: "Créditos insuficientes." }),
           { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -1087,8 +1136,8 @@ serve(async (req) => {
     // ─── Step 2: If tool calls, execute and get final response ────
     if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0 && userId) {
       const toolCalls = choice.message.tool_calls;
+      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
       
-      // Execute all tool calls
       const toolResults: any[] = [];
       for (const tc of toolCalls) {
         const args = typeof tc.function.arguments === "string"
@@ -1098,6 +1147,9 @@ serve(async (req) => {
         console.log(`Executing tool: ${tc.function.name}`, args);
         const result = await executeTool(tc.function.name, args, userId, googleToken);
         
+        // ─── Audit logging ────────────────────────────────────────
+        await logToolExecution(supabase, userId, tc.function.name, args, result);
+        
         toolResults.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -1105,10 +1157,9 @@ serve(async (req) => {
         });
       }
 
-      // Send tool results back to LLM for final streaming response
       const finalMessages = [
         ...allMessages,
-        choice.message, // assistant message with tool_calls
+        choice.message,
         ...toolResults,
       ];
 
@@ -1137,7 +1188,6 @@ serve(async (req) => {
         );
       }
 
-      // Return streaming response with tool metadata prepended
       const toolMeta = toolCalls.map((tc: any) => {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
@@ -1150,15 +1200,12 @@ serve(async (req) => {
         };
       });
 
-      // Create a TransformStream to prepend tool metadata as a custom SSE event
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
       const encoder = new TextEncoder();
 
-      // Write tool metadata event first
       writer.write(encoder.encode(`data: ${JSON.stringify({ tool_calls: toolMeta })}\n\n`));
 
-      // Pipe the rest of the streaming response
       const reader = finalResponse.body!.getReader();
       (async () => {
         try {
@@ -1177,8 +1224,38 @@ serve(async (req) => {
       });
     }
 
-    // ─── Step 3: No tool calls — stream the response directly ─────
-    // Re-call with streaming since initial was non-streaming
+    // ─── Step 3: No tool calls — use initial response content directly (OPTIMIZED) ─────
+    const initialContent = choice?.message?.content || "";
+    
+    if (initialContent) {
+      // Stream the already-available content as SSE without re-calling the LLM
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const encoder = new TextEncoder();
+
+      (async () => {
+        try {
+          // Chunk the content into smaller pieces for streaming feel
+          const chunkSize = 20;
+          for (let i = 0; i < initialContent.length; i += chunkSize) {
+            const chunk = initialContent.slice(i, i + chunkSize);
+            const sseData = JSON.stringify({
+              choices: [{ delta: { content: chunk } }],
+            });
+            await writer.write(encoder.encode(`data: ${sseData}\n\n`));
+          }
+          await writer.write(encoder.encode("data: [DONE]\n\n"));
+        } finally {
+          writer.close();
+        }
+      })();
+
+      return new Response(readable, {
+        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+      });
+    }
+
+    // Fallback: re-call with streaming if no content was returned
     const streamResponse = await fetch(
       "https://ai.gateway.lovable.dev/v1/chat/completions",
       {
@@ -1196,10 +1273,8 @@ serve(async (req) => {
     );
 
     if (!streamResponse.ok) {
-      const t = await streamResponse.text();
-      console.error("AI gateway stream error:", streamResponse.status, t);
       return new Response(
-        JSON.stringify({ error: "Erro ao conectar com a IA." }),
+        JSON.stringify({ error: "Erro ao processar resposta." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -1208,9 +1283,9 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
     });
   } catch (e) {
-    console.error("chat error:", e);
+    console.error("Chat error:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Erro desconhecido" }),
+      JSON.stringify({ error: e instanceof Error ? e.message : "Erro interno." }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

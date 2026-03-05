@@ -107,6 +107,83 @@ export type Database = {
         }
         Relationships: []
       }
+      document_chunks: {
+        Row: {
+          chunk_index: number
+          content: string
+          created_at: string
+          document_id: string
+          embedding: string | null
+          id: string
+          user_id: string
+        }
+        Insert: {
+          chunk_index?: number
+          content: string
+          created_at?: string
+          document_id: string
+          embedding?: string | null
+          id?: string
+          user_id: string
+        }
+        Update: {
+          chunk_index?: number
+          content?: string
+          created_at?: string
+          document_id?: string
+          embedding?: string | null
+          id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "document_chunks_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      documents: {
+        Row: {
+          chunk_count: number | null
+          created_at: string
+          file_path: string
+          id: string
+          mime_type: string
+          name: string
+          size_bytes: number | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          chunk_count?: number | null
+          created_at?: string
+          file_path: string
+          id?: string
+          mime_type?: string
+          name: string
+          size_bytes?: number | null
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          chunk_count?: number | null
+          created_at?: string
+          file_path?: string
+          id?: string
+          mime_type?: string
+          name?: string
+          size_bytes?: number | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       google_tokens: {
         Row: {
           access_token: string
@@ -378,7 +455,20 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      search_document_chunks: {
+        Args: {
+          match_count?: number
+          match_threshold?: number
+          match_user_id: string
+          query_embedding: string
+        }
+        Returns: {
+          content: string
+          document_id: string
+          id: string
+          similarity: number
+        }[]
+      }
     }
     Enums: {
       profile_type: "personal" | "professional"
