@@ -15,6 +15,7 @@ import Telegram from "./pages/Telegram";
 import Automations from "./pages/Automations";
 import ActivityLog from "./pages/ActivityLog";
 import SettingsPage from "./pages/SettingsPage";
+import Tasks from "./pages/Tasks";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
@@ -44,6 +45,7 @@ function ProtectedRoutes() {
       <Routes>
         <Route path="/" element={isMobile ? <Navigate to="/chat" replace /> : <Dashboard />} />
         <Route path="/chat" element={<Chat />} />
+        <Route path="/tasks" element={<Tasks />} />
         <Route path="/emails" element={<Emails />} />
         <Route path="/agenda" element={<Agenda />} />
         <Route path="/files" element={<Files />} />
