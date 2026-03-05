@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, Loader2, Volume2, VolumeX, Newspaper, Download, CheckCircle2, CalendarPlus } from "lucide-react";
+import NotificationBell from "@/components/NotificationBell";
+import FocusModeToggle from "@/components/FocusModeToggle";
 import ReactMarkdown from "react-markdown";
 import JarvisAvatar from "@/components/JarvisAvatar";
 import VoiceOrb from "@/components/VoiceOrb";
@@ -434,6 +436,8 @@ const Chat = () => {
           user_profession: p.user_profession,
           user_preferences: p.user_preferences,
           voice_settings: p.voice_settings,
+          focus_mode: (p as any).focus_mode,
+          focus_until: (p as any).focus_until,
           memories: mems?.map((m: any) => m.content) || [],
         });
       }
@@ -606,18 +610,22 @@ const Chat = () => {
             {voiceIsTranscribing ? "Transcrevendo..." : isSpeaking ? "Falando..." : isLoading ? "Processando..." : voiceIsListening ? "Ouvindo..." : "Converse por texto ou voz"}
           </p>
         </div>
-        <button
-          onClick={() => {
-            stopAllTTS();
-            setTtsEnabled(!ttsEnabled);
-          }}
-          className={`p-2 rounded-xl transition-all ${
-            ttsEnabled ? "bg-accent/20 text-accent" : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-          }`}
-          title={ttsEnabled ? "Desativar voz" : "Ativar voz"}
-        >
-          {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-        </button>
+        <div className="flex items-center gap-2">
+          <FocusModeToggle />
+          <NotificationBell />
+          <button
+            onClick={() => {
+              stopAllTTS();
+              setTtsEnabled(!ttsEnabled);
+            }}
+            className={`p-2 rounded-xl transition-all ${
+              ttsEnabled ? "bg-accent/20 text-accent" : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+            }`}
+            title={ttsEnabled ? "Desativar voz" : "Ativar voz"}
+          >
+            {ttsEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+          </button>
+        </div>
       </div>
 
       {/* Messages */}

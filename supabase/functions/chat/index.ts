@@ -873,6 +873,13 @@ GOVERNANÇA DE MEMÓRIA:
   • algo estiver em andamento, houver prazo ou follow-up
 - NÃO salve informações triviais. Seja silencioso ao salvar.
 
+MODO FOCO:
+- Quando o modo foco estiver ativo, adapte seu comportamento:
+  • Respostas mais curtas e diretas
+  • Evite digressões ou sugestões não solicitadas
+  • Foco total na tarefa em questão
+  • Mencione o tempo restante se relevante
+
 IMPORTANTE: Use os DADOS REAIS fornecidos abaixo para responder sobre e-mails, agenda, notícias e clima.
 
 Estilo de resposta:
@@ -881,12 +888,15 @@ Estilo de resposta:
 - Quando executar ferramentas, informe o resultado de forma natural e concisa`;
 
 
+
 function buildSystemPrompt(profile?: {
   instructions?: string;
   user_name?: string;
   user_profession?: string;
   user_preferences?: Record<string, string>;
   memories?: string[];
+  focus_mode?: boolean;
+  focus_until?: string;
 }, liveData?: { calendar?: string; emails?: string; news?: string; weather?: string }, currentDateTime?: string, operationalContext?: string[]): string {
   let prompt = BASE_SYSTEM_PROMPT;
 
@@ -933,6 +943,14 @@ function buildSystemPrompt(profile?: {
 
   if (operationalContext && operationalContext.length > 0) {
     prompt += `\n\n📌 CONTEXTO OPERACIONAL (coisas em andamento — use como referência):\n${operationalContext.map((c) => `- ${c}`).join("\n")}`;
+  }
+
+  // ─── Focus Mode ──────────────────────────────────────────────
+  if (profile.focus_mode && profile.focus_until) {
+    const remaining = Math.max(0, Math.round((new Date(profile.focus_until).getTime() - Date.now()) / 60000));
+    if (remaining > 0) {
+      prompt += `\n\n🎯 MODO FOCO ATIVO (${remaining} minutos restantes). Seja ultra-conciso e direto. Evite digressões.`;
+    }
   }
 
   return prompt;
