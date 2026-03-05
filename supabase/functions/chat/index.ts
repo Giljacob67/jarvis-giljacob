@@ -1219,7 +1219,7 @@ serve(async (req) => {
         const result = await executeTool(tc.function.name, args, userId!, googleToken, userTimezone);
 
         // Audit logging (fire-and-forget)
-        logToolExecution(supabase, userId!, tc.function.name, args, result);
+        void logToolExecution(supabase, userId!, tc.function.name, args, result).catch(() => {});
 
         return {
           role: "tool" as const,
@@ -1267,14 +1267,23 @@ serve(async (req) => {
           ? JSON.parse(tc.function.arguments)
           : tc.function.arguments;
         const result = toolResults.find((r: any) => r.tool_call_id === tc.id);
+        let parsedResult: any = null;
+        if (result) {
+          try {
+            parsedResult = JSON.parse(result.content);
+          } catch {
+            parsedResult = result.content;
+          }
+        }
         return {
           tool: tc.function.name,
           args,
-          result: result ? JSON.parse(result.content) : null,
+          result: parsedResult,
         };
       });
 
-      writer.write(encoder.encode(`data: ${JSON.stringify({ tool_calls: toolMeta })}\n\n`));
+      const toolMetaSSE = JSON.stringify({ choices: [{ delta: { tool_calls_meta: toolMeta } }] });
+      writer.write(encoder.encode(`data: ${toolMetaSSE}\n\n`));
 
       const reader = finalResponse.body!.getReader();
       (async () => {
