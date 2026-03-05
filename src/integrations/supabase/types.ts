@@ -238,6 +238,39 @@ export type Database = {
           },
         ]
       }
+      operational_context: {
+        Row: {
+          category: string
+          created_at: string
+          expires_at: string | null
+          id: string
+          key: string
+          updated_at: string
+          user_id: string
+          value: string
+        }
+        Insert: {
+          category?: string
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          key: string
+          updated_at?: string
+          user_id: string
+          value: string
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          expires_at?: string | null
+          id?: string
+          key?: string
+          updated_at?: string
+          user_id?: string
+          value?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
