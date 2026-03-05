@@ -525,6 +525,13 @@ const Chat = () => {
                 complete_task: "✅ Tarefa concluída",
                 list_tasks: "📋 Tarefas listadas",
                 create_calendar_event: "📅 Evento criado",
+                save_memory: "🧠 Memória salva",
+                save_operational_context: "📌 Contexto salvo",
+                recall_memory: "🔍 Memórias consultadas",
+                create_execution_plan: "📋 Plano criado",
+                analyze_legal_document: "⚖️ Documento analisado",
+                draft_legal_outline: "📝 Esboço jurídico gerado",
+                compare_documents: "🔄 Documentos comparados",
               };
               toast.success(toolLabels[tc.tool] || "Ação executada", {
                 description: tc.result.message,
