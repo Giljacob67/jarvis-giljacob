@@ -13,6 +13,7 @@ import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 import { useMediaRecorderSTT } from "@/hooks/use-media-recorder-stt";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
+import { normalizeNumbersForTTS } from "@/lib/tts-normalize";
 import {
   Dialog,
   DialogContent,
@@ -173,8 +174,9 @@ if (typeof window !== "undefined") {
 // ─── TTS fetch: returns blob URL for playback ──────────────────────
 async function fetchTTSAudioUrl(text: string, voiceSettings?: any): Promise<string | null> {
   try {
-    const cleanText = stripMarkdown(text);
-    if (!cleanText || cleanText.length < 2) return null;
+    const rawClean = stripMarkdown(text);
+    if (!rawClean || rawClean.length < 2) return null;
+    const cleanText = normalizeNumbersForTTS(rawClean);
 
     const vs = voiceSettings || {};
     const response = await fetch(TTS_URL, {

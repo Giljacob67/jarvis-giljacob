@@ -52,6 +52,7 @@ serve(async (req) => {
         body: JSON.stringify({
           text: truncatedText,
           model_id: modelId,
+          apply_text_normalization: "on",
           voice_settings: {
             stability: safeStability,
             similarity_boost: safeSimilarity,
