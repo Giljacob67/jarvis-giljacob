@@ -19,13 +19,12 @@ import Tasks from "./pages/Tasks";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
-import { useIsMobile } from "./hooks/use-mobile";
+
 
 const queryClient = new QueryClient();
 
 function ProtectedRoutes() {
   const { user, loading } = useAuth();
-  const isMobile = useIsMobile();
 
   if (loading) {
     return (
@@ -42,7 +41,8 @@ function ProtectedRoutes() {
   return (
     <AppLayout>
       <Routes>
-        <Route path="/" element={isMobile ? <Navigate to="/chat" replace /> : <Dashboard />} />
+        <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/emails" element={<Emails />} />
