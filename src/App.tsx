@@ -25,6 +25,7 @@ const queryClient = new QueryClient();
 
 function ProtectedRoutes() {
   const { user, loading } = useAuth();
+  const isMobile = useIsMobile();
 
   if (loading) {
     return (
@@ -37,8 +38,6 @@ function ProtectedRoutes() {
   if (!user) {
     return <Navigate to="/auth" replace />;
   }
-
-  const isMobile = useIsMobile();
 
   return (
     <AppLayout>
