@@ -1,46 +1,90 @@
 
 
-## Análise do Protótipo e Plano de Implementação
+## Fase 1 — Barge-in + TTS por Chunks Semânticos
 
-Analisei a imagem do seu protótipo. Ele apresenta elementos interessantes que podemos incorporar ao projeto atual:
+Incorporando seu feedback detalhado, este é o plano refinado para a Fase 1.
 
-### Elementos identificados no protótipo:
-1. **Relógio digital grande** com data por extenso (estilo HUD/Jarvis)
-2. **Card de Clima** — temperatura atual e condição (ex: 29°C, Nublado)
-3. **Card de Notícias** — feed de notícias resumido
-4. **Orbe central interativa** — botão de voz "segure para falar" (press-and-hold)
-5. **Botão "Jornal"** — acesso rápido a notícias
-6. **Botão "Export"** — exportar conversas
-7. **Campo de texto** na parte inferior
+---
 
-### Plano de implementação
+### 1. Barge-in (Interrupção Natural)
 
-#### 1. Redesenhar o Dashboard com elementos do protótipo
-- Adicionar um **relógio digital estilo HUD** no topo (hora grande + data por extenso em PT-BR), substituindo o header textual atual
-- Criar um **card de Clima** usando uma API gratuita (OpenWeatherMap) via edge function, mostrando temperatura e condição com ícone
-- Criar um **card de Notícias** usando uma API de notícias brasileiras (ex: NewsAPI) via edge function, mostrando manchetes do dia
-- Manter os cards existentes (e-mails, agenda, atividade) abaixo
+**Problema**: Quando o usuário pressiona a Orbe enquanto o Jarvis fala, nada acontece — o áudio continua.
 
-#### 2. Botão de voz estilo "Orbe" no Chat
-- Substituir o botão de microfone atual por uma **orbe central** animada (similar ao JarvisAvatar mas interativa)
-- Implementar **press-and-hold** (segure para falar): ao pressionar a orbe, inicia gravação; ao soltar, envia
-- Manter o campo de texto e botão enviar abaixo da orbe
+**Solução**: No `handleOrbDown`, antes de iniciar o STT:
+- Chamar `sharedAudio.pause()` para cortar o áudio imediatamente
+- Setar `isSpeaking = false`
+- Cancelar qualquer fila de chunks pendentes (via flag `abortRef`)
 
-#### 3. Botões de ação rápida
-- Adicionar botão **"Jornal"** que abre um painel/modal com notícias do dia
-- Adicionar botão **"Export"** para exportar o histórico de chat (JSON/texto)
+Isso é simples e dá resultado imediato — sensação "cinema".
 
-### Detalhes técnicos
+**Arquivo**: `src/pages/Chat.tsx`
 
-- **Clima**: Nova edge function `weather-api` que consulta OpenWeatherMap. Necessário o secret `OPENWEATHER_API_KEY`.
-- **Notícias**: Nova edge function `news-api` que consulta NewsAPI.org. Necessário o secret `NEWS_API_KEY`.
-- **Dashboard**: Reorganizar layout com relógio no topo, clima e notícias em grid lado a lado (como no protótipo), seguido pelos cards existentes.
-- **Chat**: Refatorar a área de input para incluir a orbe central com `onPointerDown`/`onPointerUp` para press-and-hold, e os botões Jornal/Export nas laterais.
+---
 
-### Prioridade sugerida
-1. Relógio HUD + layout do Dashboard
-2. Card de Clima (requer API key)
-3. Card de Notícias (requer API key)
-4. Orbe interativa no Chat com press-and-hold
-5. Botões Jornal e Export
+### 2. TTS por Chunks Semânticos (não sentença inteira, não resposta inteira)
+
+**Problema atual**: O TTS espera a resposta COMPLETA do LLM, depois gera o áudio inteiro, depois toca. Latência altíssima.
+
+**Solução**: Conforme sua sugestão, usar **chunks semânticos** — quebrar por `.`, `!`, `?`, `\n` conforme o streaming do LLM vai chegando:
+
+```text
+LLM streaming → acumula texto → detecta fim de frase
+                                    ↓
+                              envia chunk ao TTS
+                                    ↓
+                              toca áudio imediatamente
+                                    ↓
+                         próximo chunk já está sendo gerado
+```
+
+**Implementação no frontend** (`Chat.tsx`):
+- Novo estado: `ttsQueueRef` (fila de frases para TTS)
+- No `onDelta` do streaming, acumular texto e detectar pontuação final (`.`, `!`, `?`, `\n`)
+- Ao detectar fim de frase, enfileirar o chunk para TTS
+- Player sequencial: toca chunk 1, quando termina toca chunk 2, etc.
+- Flag `abortRef` para barge-in cancelar toda a fila
+
+**Resultado**: O Jarvis começa a falar 1-2 segundos após o início da resposta, não 5-10 segundos depois.
+
+**Arquivo**: `src/pages/Chat.tsx` (refatoração do `sendMessage` e `playElevenLabsTTS`)
+
+---
+
+### 3. Endpoint de TTS Streaming (edge function)
+
+**Melhoria na edge function**: Usar o endpoint `/stream` do ElevenLabs ao invés do batch, para que cada chunk individual também retorne mais rápido.
+
+- Alterar URL de `/v1/text-to-speech/{voice}` para `/v1/text-to-speech/{voice}/stream`
+- Usar modelo `eleven_turbo_v2_5` para menor latência (manter `eleven_multilingual_v2` como fallback configurável)
+- Retornar o stream diretamente como `Transfer-Encoding: chunked`
+
+**Nota sobre Safari/iOS**: Como `MediaSource` API não é suportada no Safari mobile, o streaming da edge function será acumulado como blob no frontend antes de tocar. A vantagem ainda existe porque cada chunk de texto é pequeno (1 frase), então o TTS retorna rápido mesmo em modo blob.
+
+**Arquivo**: `supabase/functions/elevenlabs-tts/index.ts`
+
+---
+
+### 4. Controle visual durante fala por chunks
+
+- A Orbe e o avatar já animam com `isSpeaking` — manter isso ativo durante toda a sequência de chunks
+- Mostrar indicador "Falando..." no header enquanto a fila de TTS está ativa
+- Ao barge-in, parar animação imediatamente
+
+**Arquivo**: `src/pages/Chat.tsx`
+
+---
+
+### Resumo das mudanças
+
+| Arquivo | Mudança |
+|---------|---------|
+| `src/pages/Chat.tsx` | Barge-in no `handleOrbDown`, fila de TTS por chunks semânticos, abort flag |
+| `supabase/functions/elevenlabs-tts/index.ts` | Endpoint streaming + modelo turbo |
+
+### Resultado esperado
+
+- Latência percebida: de ~8s para ~1.5s
+- Interrupção natural ao pressionar a Orbe
+- Jarvis "fala enquanto pensa"
+- Funciona em iOS/Safari com o workaround de blob existente
 
