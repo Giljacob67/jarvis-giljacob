@@ -314,6 +314,9 @@ const Chat = () => {
   const ttsPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  // ─── Latency tracking refs (no re-renders) ─────────────────────
+  const latencyRef = useRef<{ t0: number; t1: number; t2: number; logged: boolean }>({ t0: 0, t1: 0, t2: 0, logged: false });
+
   const stt = useSpeechRecognition({
     onResult: (transcript) => {
       voiceTranscriptRef.current = voiceTranscriptRef.current
@@ -448,6 +451,18 @@ const Chat = () => {
         setIsSpeaking(true);
 
         await new Promise<void>((resolve) => {
+          // ─── Record t2 (first TTS play) ──────────────────────
+          const onPlay = () => {
+            if (latencyRef.current.t2 === 0 && latencyRef.current.t0 > 0) {
+              latencyRef.current.t2 = performance.now();
+              const t0 = latencyRef.current.t0;
+              const t1 = latencyRef.current.t1;
+              const t2 = latencyRef.current.t2;
+              console.log(`[LATENCY] speechEnd→firstAudio: ${Math.round(t2 - t0)}ms`);
+              if (t1 > 0) console.log(`[LATENCY] firstDelta→firstAudio: ${Math.round(t2 - t1)}ms`);
+            }
+          };
+          audio.onplay = onPlay;
           audio.onended = () => {
             currentAudioRef.current = null;
             URL.revokeObjectURL(audioUrl!);
@@ -753,11 +768,20 @@ const Chat = () => {
       _allProfiles: allProfiles,
     };
 
+    // ─── Record t0 (speech end / send) ──────────────────────────
+    latencyRef.current = { t0: performance.now(), t1: 0, t2: 0, logged: false };
+
     let assistantContent = "";
     // Buffer for accumulating text to detect sentence boundaries
     let sentenceBuffer = "";
 
     const upsertAssistant = (chunk: string) => {
+      // ─── Record t1 (first delta) ────────────────────────────
+      if (latencyRef.current.t1 === 0) {
+        latencyRef.current.t1 = performance.now();
+        const dt = Math.round(latencyRef.current.t1 - latencyRef.current.t0);
+        console.log(`[LATENCY] speechEnd→firstDelta: ${dt}ms`);
+      }
       assistantContent += chunk;
       
       // Detect [MODE:xxx] marker
