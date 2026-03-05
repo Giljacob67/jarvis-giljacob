@@ -18,6 +18,7 @@ import SettingsPage from "./pages/SettingsPage";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
 import { Loader2 } from "lucide-react";
+import { useIsMobile } from "./hooks/use-mobile";
 
 const queryClient = new QueryClient();
 
@@ -36,10 +37,12 @@ function ProtectedRoutes() {
     return <Navigate to="/auth" replace />;
   }
 
+  const isMobile = useIsMobile();
+
   return (
     <AppLayout>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={isMobile ? <Navigate to="/chat" replace /> : <Dashboard />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/emails" element={<Emails />} />
         <Route path="/agenda" element={<Agenda />} />
