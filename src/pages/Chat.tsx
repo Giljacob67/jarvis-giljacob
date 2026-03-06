@@ -223,6 +223,54 @@ async function fetchTTSAudioUrl(text: string, voiceSettings?: any): Promise<stri
 // ─── Aggressive sentence splitter for low-latency TTS ───────────────
 // Splits on . ! ? newline, AND on , ; : — when chunk exceeds MAX_CHUNK_CHARS
 const MAX_CHUNK_CHARS = 120;
+const OVERLAP_MIN_CHARS = 18;
+
+function normalizeChunkForCompare(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hashChunk(text: string): string {
+  const normalized = normalizeChunkForCompare(text);
+  let hash = 2166136261;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function hasNearOverlap(a: string, b: string): boolean {
+  const left = normalizeChunkForCompare(a);
+  const right = normalizeChunkForCompare(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  const maxOverlap = Math.min(left.length, right.length);
+  for (let size = maxOverlap; size >= OVERLAP_MIN_CHARS; size--) {
+    const leftSuffix = left.slice(-size);
+    const rightPrefix = right.slice(0, size);
+    if (leftSuffix === rightPrefix) return true;
+  }
+
+  if (left.length > OVERLAP_MIN_CHARS && right.includes(left)) return true;
+  if (right.length > OVERLAP_MIN_CHARS && left.includes(right)) return true;
+
+  return false;
+}
+
+function englishLeakageCount(text: string): number {
+  const tokens = normalizeChunkForCompare(text).split(" ").filter(Boolean);
+  const leakageTerms = new Set([
+    "the", "and", "with", "for", "from", "you", "your", "please", "today", "tomorrow", "meeting", "task",
+  ]);
+  return tokens.reduce((acc, token) => acc + (leakageTerms.has(token) ? 1 : 0), 0);
+}
 
 function extractSentences(buffer: string): { sentences: string[]; remainder: string } {
   const sentences: string[] = [];
@@ -336,6 +384,13 @@ const Chat = () => {
   const ttsQueueRef = useRef<string[]>([]);
   const ttsPlayingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const queuedChunkHashesRef = useRef<Set<string>>(new Set());
+  const recentSpokenChunksRef = useRef<string[]>([]);
+  const metricRef = useRef({
+    charsSentToTTS: 0,
+    duplicateChunkDrops: 0,
+    englishLeakageCount: 0,
+  });
 
   // ─── Latency tracking refs (no re-renders) ─────────────────────
   const latencyRef = useRef<{ t0: number; t1: number; t2: number; logged: boolean }>({ t0: 0, t1: 0, t2: 0, logged: false });
@@ -413,6 +468,8 @@ const Chat = () => {
     ttsAbortRef.current = true;
     ttsQueueRef.current = [];
     ttsPlayingRef.current = false;
+    queuedChunkHashesRef.current.clear();
+    recentSpokenChunksRef.current = [];
     // Stop current audio immediately
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
@@ -437,6 +494,7 @@ const Chat = () => {
       if (ttsAbortRef.current) break;
 
       const chunk = ttsQueueRef.current.shift()!;
+      queuedChunkHashesRef.current.delete(hashChunk(chunk));
 
       // Use prefetched URL if available, otherwise fetch now
       let audioUrl: string | null;
@@ -482,6 +540,7 @@ const Chat = () => {
               const t1 = latencyRef.current.t1;
               const t2 = latencyRef.current.t2;
               console.log(`[LATENCY] speechEnd→firstAudio: ${Math.round(t2 - t0)}ms`);
+              console.log(`[METRIC] speech_end_to_first_audio_ms=${Math.round(t2 - t0)}`);
               if (t1 > 0) console.log(`[LATENCY] firstDelta→firstAudio: ${Math.round(t2 - t1)}ms`);
             }
           };
@@ -511,6 +570,11 @@ const Chat = () => {
         }
 
         if (ttsAbortRef.current) break;
+
+        recentSpokenChunksRef.current.push(chunk);
+        if (recentSpokenChunksRef.current.length > 8) {
+          recentSpokenChunksRef.current.shift();
+        }
       }
     }
 
@@ -523,8 +587,31 @@ const Chat = () => {
   // ─── Enqueue a sentence for TTS ──────────────────────────────────
   const enqueueTTSChunk = useCallback((sentence: string, voiceSettings?: any) => {
     if (ttsAbortRef.current) return;
-    ttsQueueRef.current.push(sentence);
-    // Start processing if not already running
+
+    const trimmed = sentence.trim();
+    if (!trimmed) return;
+
+    const hash = hashChunk(trimmed);
+    if (queuedChunkHashesRef.current.has(hash)) {
+      metricRef.current.duplicateChunkDrops += 1;
+      return;
+    }
+
+    const lastQueued = ttsQueueRef.current[ttsQueueRef.current.length - 1];
+    if (lastQueued && hasNearOverlap(lastQueued, trimmed)) {
+      metricRef.current.duplicateChunkDrops += 1;
+      return;
+    }
+
+    if (recentSpokenChunksRef.current.some((spoken) => hasNearOverlap(spoken, trimmed))) {
+      metricRef.current.duplicateChunkDrops += 1;
+      return;
+    }
+
+    queuedChunkHashesRef.current.add(hash);
+    metricRef.current.charsSentToTTS += trimmed.length;
+    metricRef.current.englishLeakageCount += englishLeakageCount(trimmed);
+    ttsQueueRef.current.push(trimmed);
     processTTSQueue(voiceSettings);
   }, [processTTSQueue]);
 
@@ -794,6 +881,9 @@ const Chat = () => {
     // Reset abort flag for new response
     ttsAbortRef.current = false;
     ttsQueueRef.current = [];
+    queuedChunkHashesRef.current.clear();
+    recentSpokenChunksRef.current = [];
+    metricRef.current = { charsSentToTTS: 0, duplicateChunkDrops: 0, englishLeakageCount: 0 };
 
     // Upload pending files first
     let fileContext = "";
@@ -973,6 +1063,9 @@ const Chat = () => {
             enqueueTTSChunk(sentenceBuffer.trim(), activeProfile?.voice_settings);
             sentenceBuffer = "";
           }
+          console.log(`[METRIC] chars_sent_to_tts=${metricRef.current.charsSentToTTS}`);
+          console.log(`[METRIC] duplicate_chunk_drops=${metricRef.current.duplicateChunkDrops}`);
+          console.log(`[METRIC] english_leakage_count=${metricRef.current.englishLeakageCount}`);
         },
         onError: (msg) => {
           toast.error(msg);
