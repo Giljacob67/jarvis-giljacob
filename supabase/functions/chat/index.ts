@@ -1,5 +1,14 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { classifyIntent } from "./intent-router.ts";
+import { applyVoiceBudget, chunkForSSE } from "./response-policy.ts";
+import {
+  getCacheStats,
+  getCachedRuntimeSnapshot,
+  getCachedToolResult,
+  setCachedRuntimeSnapshot,
+  setCachedToolResult,
+} from "./tool-runtime.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1111,41 +1120,82 @@ REGRAS DE TROCA DE MODO:
 }
 
 // ─── Main Handler ───────────────────────────────────────────────────
+function sseData(payload: unknown): Uint8Array {
+  const encoder = new TextEncoder();
+  return encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function sseDone(): Uint8Array {
+  const encoder = new TextEncoder();
+  return encoder.encode("data: [DONE]\n\n");
+}
+
+function getLastUserText(messages: Array<{ role: string; content: string }>): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return messages[i].content || "";
+  }
+  return "";
+}
+
+function looksLikeStatusQuery(text: string): boolean {
+  const t = text.toLowerCase();
+  return /agenda|calend[a?]rio|tarefas?|e-?mails?|status|hoje/.test(t);
+}
+
+async function streamTextResponse(text: string): Promise<Response> {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+
+  (async () => {
+    try {
+      for (const chunk of chunkForSSE(text)) {
+        await writer.write(sseData({ choices: [{ delta: { content: chunk } }] }));
+      }
+      await writer.write(sseDone());
+    } finally {
+      writer.close();
+    }
+  })();
+
+  return new Response(readable, {
+    headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+  });
+}
+
+// Best-effort runtime memory only: non-durable and non-authoritative.
+const runtimeSessionState = new Map<string, {
+  lastTopics: string[];
+  lastQuestionsAsked: string[];
+  lastToolResults: Record<string, { timestamp: number }>;
+  lastBriefingTimestamp: number;
+}>();
+
 serve(async (req) => {
-  const t_requestStart = Date.now();
+  const tRequestStart = Date.now();
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { messages, profile, jarvisMode, userTimezone: rawTz, sessionState } = await req.json();
+    const { messages, profile, jarvisMode, userTimezone: rawTz } = await req.json();
     const userTimezone = rawTz || "America/Sao_Paulo";
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const authHeader = req.headers.get("Authorization");
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
     let userId: string | null = null;
     let googleToken: string | null = null;
-    let liveData: { calendar?: string; emails?: string; news?: string; weather?: string } = {};
-    const authHeader = req.headers.get("Authorization");
-    const userCity = profile?.user_preferences?.city || "São Paulo";
-
-    const [newsData, weatherData] = await Promise.all([
-      fetchNews(),
-      fetchWeather(userCity),
-    ]);
-    liveData.news = newsData;
-    liveData.weather = weatherData;
-
     let operationalContext: string[] = [];
 
-    try {
-      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      const token = authHeader?.replace("Bearer ", "");
-      if (token) {
+    const token = authHeader?.replace("Bearer ", "");
+    if (token) {
+      try {
         const { data: { user } } = await supabase.auth.getUser(token);
         if (user) {
           userId = user.id;
-          
           const [gToken, opCtxResult] = await Promise.all([
             getValidGoogleToken(supabase, user.id),
             supabase
@@ -1160,18 +1210,94 @@ serve(async (req) => {
           googleToken = gToken;
           operationalContext = (opCtxResult.data || []).map((o: any) => `[${o.category}] ${o.key}: ${o.value}`);
 
-          if (googleToken) {
-            const [calendarData, emailData] = await Promise.all([
-              fetchCalendarEvents(googleToken, userTimezone),
-              fetchRecentEmails(googleToken),
-            ]);
-            liveData.calendar = calendarData;
-            liveData.emails = emailData;
+          if (!runtimeSessionState.has(user.id)) {
+            runtimeSessionState.set(user.id, {
+              lastTopics: [],
+              lastQuestionsAsked: [],
+              lastToolResults: {},
+              lastBriefingTimestamp: 0,
+            });
           }
         }
+      } catch (e) {
+        console.error("auth/context bootstrap error", e);
       }
-    } catch (e) {
-      console.error("Error fetching live data:", e);
+    }
+
+    const lastUserMessage = getLastUserText(safeMessages);
+    const intent = classifyIntent(lastUserMessage);
+
+    if (intent.fastPathCommand === "mode_switch") {
+      const mode = intent.mode === "professional" ? "professional" : "personal";
+      const label = mode === "professional" ? "profissional" : "pessoal";
+      return streamTextResponse(`[MODE:${mode}] Certo. Modo ${label} ativado.`);
+    }
+
+    if (intent.fastPathCommand === "stop") {
+      return streamTextResponse("Certo. Parei aqui.");
+    }
+
+    if (intent.fastPathCommand === "repeat") {
+      const lastAssistant = [...safeMessages].reverse().find((m: any) => m.role === "assistant")?.content || "Ainda n?o h? resposta anterior para repetir.";
+      const repeatText = applyVoiceBudget(lastAssistant).text;
+      return streamTextResponse(`Repetindo: ${repeatText}`);
+    }
+
+    if (intent.fastPathCommand === "shorter") {
+      const lastAssistant = [...safeMessages].reverse().find((m: any) => m.role === "assistant")?.content || "Sem contexto anterior para resumir.";
+      const shortText = applyVoiceBudget(lastAssistant).text;
+      return streamTextResponse(`Vers?o curta: ${shortText}`);
+    }
+
+    if (intent.fastPathCommand === "refresh" && userId) {
+      if (intent.refreshTarget === "agenda" && googleToken) {
+        const fresh = await fetchCalendarEvents(googleToken, userTimezone);
+        setCachedRuntimeSnapshot(userId, "calendar_snapshot", fresh);
+        return streamTextResponse(applyVoiceBudget(`Agenda atualizada. ${fresh}`).text);
+      }
+      if (intent.refreshTarget === "emails" && googleToken) {
+        const fresh = await fetchRecentEmails(googleToken);
+        setCachedRuntimeSnapshot(userId, "emails_snapshot", fresh);
+        return streamTextResponse(applyVoiceBudget(`E-mails atualizados. ${fresh}`).text);
+      }
+      if (intent.refreshTarget === "tarefas") {
+        const result = await executeTool("list_tasks", { filter: "all" }, userId, googleToken, userTimezone);
+        setCachedToolResult(userId, "list_tasks", { filter: "all" }, result);
+        return streamTextResponse(applyVoiceBudget(`Tarefas atualizadas. ${result}`).text);
+      }
+      return streamTextResponse("Certo. Atualiza??o conclu?da.");
+    }
+
+    let liveData: { calendar?: string; emails?: string; news?: string; weather?: string } = {};
+    const userCity = profile?.user_preferences?.city || "S?o Paulo";
+
+    if (intent.category === "status_query" || looksLikeStatusQuery(lastUserMessage)) {
+      if (userId && googleToken) {
+        const calendarSnapshot = getCachedRuntimeSnapshot(userId, "calendar_snapshot");
+        if (calendarSnapshot.hit) {
+          liveData.calendar = calendarSnapshot.value;
+        } else {
+          const fresh = await fetchCalendarEvents(googleToken, userTimezone);
+          liveData.calendar = fresh;
+          setCachedRuntimeSnapshot(userId, "calendar_snapshot", fresh);
+        }
+
+        const emailSnapshot = getCachedRuntimeSnapshot(userId, "emails_snapshot");
+        if (emailSnapshot.hit) {
+          liveData.emails = emailSnapshot.value;
+        } else {
+          const fresh = await fetchRecentEmails(googleToken);
+          liveData.emails = fresh;
+          setCachedRuntimeSnapshot(userId, "emails_snapshot", fresh);
+        }
+      }
+
+      const [newsData, weatherData] = await Promise.all([
+        fetchNews(),
+        fetchWeather(userCity),
+      ]);
+      liveData.news = newsData;
+      liveData.weather = weatherData;
     }
 
     const now = new Date();
@@ -1185,41 +1311,25 @@ serve(async (req) => {
 
     const allMessages = [
       { role: "system", content: systemPrompt },
-      ...messages,
+      ...safeMessages,
     ];
 
-    // ─── Step 1: Non-streaming call to detect tool calls ──────────
-    const initialResponse = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
-          messages: allMessages,
-          tools,
-          tool_choice: "auto",
-          stream: false,
-        }),
-      }
-    );
+    const initialResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: allMessages,
+        tools,
+        tool_choice: "auto",
+        stream: false,
+      }),
+    });
 
     if (!initialResponse.ok) {
-      if (initialResponse.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Limite de requisições excedido. Tente novamente em alguns instantes." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      if (initialResponse.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "Créditos insuficientes." }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
       const t = await initialResponse.text();
       console.error("AI gateway error:", initialResponse.status, t);
       return new Response(
@@ -1230,112 +1340,57 @@ serve(async (req) => {
 
     const initialData = await initialResponse.json();
     const choice = initialData.choices?.[0];
+    const toolCalls = choice?.message?.tool_calls || [];
 
-    // ─── Step 2: If tool calls, execute and get final response ────
-    if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0 && userId) {
-      const toolCalls = choice.message.tool_calls;
-      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-      // ─── Preamble: immediately stream a short spoken phrase before tools run ────
-      const preambles = [
-        "Certo. Só um instante.",
-        "Entendido. Verificando agora.",
-        "Um momento, por favor.",
-        "Certo, já estou verificando.",
-      ];
-      const preamble = preambles[Math.floor(Math.random() * preambles.length)];
-
+    if (toolCalls.length > 0 && userId) {
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
-      const encoder = new TextEncoder();
 
-      // Send preamble as a streaming delta so the client speaks it immediately
-      const preambleSSE = JSON.stringify({
-        choices: [{ delta: { content: preamble + "\n\n" } }],
-      });
-      writer.write(encoder.encode(`data: ${preambleSSE}\n\n`));
-      console.log(`[PERF] preamble written at +${Date.now() - t_requestStart}ms`);
+      const preambles = [
+        "Certo. S? um instante.",
+        "Entendido. Verificando agora.",
+        "Um momento, por favor.",
+        "Certo, j? estou verificando.",
+      ];
+      const preamble = preambles[Math.floor(Math.random() * preambles.length)];
+      await writer.write(sseData({ choices: [{ delta: { content: `${preamble}\n\n` } }] }));
+      await writer.write(sseData({ choices: [{ delta: { tool_calls_start: toolCalls.map((tc: any) => ({ tool: tc.function.name })) } }] }));
 
-      // ─── Send tool_calls_start SSE for real-time HUD ──────────
-      const toolStartSSE = JSON.stringify({
-        choices: [{ delta: { tool_calls_start: toolCalls.map((tc: any) => ({ tool: tc.function.name })) } }],
-      });
-      writer.write(encoder.encode(`data: ${toolStartSSE}\n\n`));
+      let cacheHitsTurn = 0;
+      let cacheMissesTurn = 0;
 
-      // ─── pMap: bounded-concurrency parallel execution ──────────
-      async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
-        const results: R[] = new Array(items.length);
-        let index = 0;
-        async function worker() {
-          while (index < items.length) {
-            const i = index++;
-            results[i] = await fn(items[i]);
-          }
-        }
-        await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-        return results;
-      }
-
-      // ─── Execute tool calls with concurrency=3 ─────────────────
-      const t_toolsStart = Date.now();
-
-      const toolResults = await pMap(toolCalls, async (tc: any) => {
+      const toolResults = await Promise.all(toolCalls.map(async (tc: any) => {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
           : tc.function.arguments;
 
-        console.log(`Executing tool: ${tc.function.name}`, args);
-        const result = await executeTool(tc.function.name, args, userId!, googleToken, userTimezone);
+        const cached = getCachedToolResult(userId!, tc.function.name, args);
+        if (cached.hit && cached.value) {
+          cacheHitsTurn += 1;
+          return {
+            role: "tool" as const,
+            tool_call_id: tc.id,
+            content: cached.value,
+            cache_hit: true,
+            args,
+          };
+        }
 
-        // Audit logging (fire-and-forget)
+        cacheMissesTurn += 1;
+        const result = await executeTool(tc.function.name, args, userId!, googleToken, userTimezone);
+        setCachedToolResult(userId!, tc.function.name, args, result);
         void logToolExecution(supabase, userId!, tc.function.name, args, result).catch(() => {});
 
         return {
           role: "tool" as const,
           tool_call_id: tc.id,
           content: result,
+          cache_hit: false,
+          args,
         };
-      }, 3);
-
-      const t_toolsEnd = Date.now();
-      console.log(`[PERF] tools executed in ${t_toolsEnd - t_toolsStart}ms (${toolCalls.length} tools, concurrency=3)`);
-
-      const finalMessages = [
-        ...allMessages,
-        choice.message,
-        ...toolResults,
-      ];
-
-      const finalResponse = await fetch(
-        "https://ai.gateway.lovable.dev/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${LOVABLE_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "google/gemini-3-flash-preview",
-            messages: finalMessages,
-            stream: true,
-          }),
-        }
-      );
-
-      if (!finalResponse.ok) {
-        const t = await finalResponse.text();
-        console.error("AI gateway final error:", finalResponse.status, t);
-        await writer.write(encoder.encode("data: [DONE]\n\n"));
-        writer.close();
-        return new Response(readable, {
-          headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-        });
-      }
+      }));
 
       const toolMeta = toolCalls.map((tc: any) => {
-        const args = typeof tc.function.arguments === "string"
-          ? JSON.parse(tc.function.arguments)
-          : tc.function.arguments;
         const result = toolResults.find((r: any) => r.tool_call_id === tc.id);
         let parsedResult: any = null;
         if (result) {
@@ -1345,69 +1400,23 @@ serve(async (req) => {
             parsedResult = result.content;
           }
         }
+
         return {
           tool: tc.function.name,
-          args,
+          args: result?.args ?? {},
+          cache_hit: result?.cache_hit ?? false,
           result: parsedResult,
         };
       });
+      await writer.write(sseData({ choices: [{ delta: { tool_calls_meta: toolMeta } }] }));
 
-      const toolMetaSSE = JSON.stringify({ choices: [{ delta: { tool_calls_meta: toolMeta } }] });
-      writer.write(encoder.encode(`data: ${toolMetaSSE}\n\n`));
+      const finalMessages = [
+        ...allMessages,
+        choice.message,
+        ...toolResults.map((r: any) => ({ role: "tool", tool_call_id: r.tool_call_id, content: r.content })),
+      ];
 
-      const reader = finalResponse.body!.getReader();
-      (async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            await writer.write(value);
-          }
-        } finally {
-          writer.close();
-        }
-      })();
-
-      return new Response(readable, {
-        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-      });
-    }
-
-    // ─── Step 3: No tool calls — use initial response content directly (OPTIMIZED) ─────
-    const initialContent = choice?.message?.content || "";
-    
-    if (initialContent) {
-      // Stream the already-available content as SSE without re-calling the LLM
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
-      const encoder = new TextEncoder();
-
-      (async () => {
-        try {
-          // Chunk the content into smaller pieces for streaming feel
-          const chunkSize = 20;
-          for (let i = 0; i < initialContent.length; i += chunkSize) {
-            const chunk = initialContent.slice(i, i + chunkSize);
-            const sseData = JSON.stringify({
-              choices: [{ delta: { content: chunk } }],
-            });
-            await writer.write(encoder.encode(`data: ${sseData}\n\n`));
-          }
-          await writer.write(encoder.encode("data: [DONE]\n\n"));
-        } finally {
-          writer.close();
-        }
-      })();
-
-      return new Response(readable, {
-        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-      });
-    }
-
-    // Fallback: re-call with streaming if no content was returned
-    const streamResponse = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
-      {
+      const finalResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -1415,22 +1424,52 @@ serve(async (req) => {
         },
         body: JSON.stringify({
           model: "google/gemini-3-flash-preview",
-          messages: allMessages,
-          stream: true,
+          messages: finalMessages,
+          stream: false,
         }),
-      }
-    );
+      });
 
-    if (!streamResponse.ok) {
-      return new Response(
-        JSON.stringify({ error: "Erro ao processar resposta." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      const finalData = await finalResponse.json().catch(() => ({}));
+      const finalContentRaw = finalData?.choices?.[0]?.message?.content || "Conclu?do.";
+      const finalContent = applyVoiceBudget(finalContentRaw).text;
+
+      for (const chunk of chunkForSSE(finalContent)) {
+        await writer.write(sseData({ choices: [{ delta: { content: chunk } }] }));
+      }
+
+      const cacheStats = getCacheStats();
+      console.log(JSON.stringify({
+        metric: "turn_metrics",
+        tool_calls_per_turn: toolCalls.length,
+        cache_hits_turn: cacheHitsTurn,
+        cache_misses_turn: cacheMissesTurn,
+        cache_hit_rate: cacheStats.cache_hit_rate,
+        intent_category: intent.category,
+        duration_ms: Date.now() - tRequestStart,
+      }));
+
+      await writer.write(sseDone());
+      writer.close();
+
+      return new Response(readable, {
+        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+      });
     }
 
-    return new Response(streamResponse.body, {
-      headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-    });
+    const initialContent = choice?.message?.content || "";
+    if (initialContent) {
+      const budgeted = applyVoiceBudget(initialContent).text;
+      console.log(JSON.stringify({
+        metric: "turn_metrics",
+        tool_calls_per_turn: 0,
+        cache_hit_rate: getCacheStats().cache_hit_rate,
+        intent_category: intent.category,
+        duration_ms: Date.now() - tRequestStart,
+      }));
+      return streamTextResponse(budgeted);
+    }
+
+    return streamTextResponse("Desculpe, n?o consegui gerar uma resposta agora.");
   } catch (e) {
     console.error("Chat error:", e);
     return new Response(
@@ -1439,3 +1478,4 @@ serve(async (req) => {
     );
   }
 });
+
